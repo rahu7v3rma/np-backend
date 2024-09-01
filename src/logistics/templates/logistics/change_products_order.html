@@ -1,0 +1,91 @@
+{% extends 'admin/change_form.html' %}
+{% load static %}
+
+{% block extrahead %}
+{{ block.super }}
+<script src="https://cdn.jsdelivr.net/npm/axios/dist/axios.min.js"></script>
+<script src="{% static "js/po_view_populates.js" %}"></script>
+<script>
+  window.addEventListener('load', function (){
+      let _products = [];
+      {% for prod in product_instance.products.all %}
+            _products.push({
+                "prod_id": "{{ prod.product_id.id }}",
+                "prod_image": "{{ prod.product_id.main_image_link }}",
+                "product_name": "{{ prod.product_id.name }}",
+                "category": "{{ prod.product_id.categories.all.first.name }}",
+                "brand": "{{ prod.product_id.brand.name }}",
+                "quantity_ordered": {{ prod.quantity_ordered }},
+                "quantity_received": 0,
+                "sku": "{{ prod.product_id.sku }}",
+                "barcode": "{{ prod.product_id.reference }}",
+                "cost_price": {{ prod.product_id.cost_price }},
+                "status": "{{ product_instance.status }}",
+            })
+      {% endfor %}
+      updateViewOrder(_products, '{{ product_instance.supplier }}', '{{ product_instance.id }}');
+      updateViewSubtotal(_products);
+      let elements = document.getElementById("content").getElementsByTagName("h2");
+      if (elements) elements[0].style.display = "none";
+  }, false);
+</script>
+{% endblock %}
+
+{% block extrastyle %}
+{{ block.super }}
+<link rel="stylesheet" href="{% static "css/tailwind.css" %}">
+{% endblock %}
+{% block content %}
+<div class="container" id="react-app" style="flex: 1; width: 100%;">
+  <div class="px-4 py-4 bg-[#417893] flex flex-col items-center"><label
+      class=" font-sans font-bold text-lg leading-[18px] text-[#f5dd5d]" id="po-number">PO NUMBER {{ product_instance.id }}</label>
+    <div class="w-full">
+      <div class="text-white" style="margin-bottom: 10px;">
+
+          <div class="flex gap-2 h-8">
+              <button onclick="window.location.href = '/admin/logistics/poorder/'"
+        class="rounded-lg bg-[#5C5C5C] hover:bg-black px-2">Back</button>
+          <button class="rounded-lg bg-[#5C5C5C] hover:bg-black px-2" onclick="exportOrder()">Export PO</button>
+        </div>
+      </div>
+      <div class="w-full">
+        <div class="col-span-3 flex flex-col border-[#F2F4F8] mb-[6px]">
+          <div class="border-t-[1px] border-r-[1px] border-l-[1px]  mb-[6px]">
+            <div class="h-[58px] flex items-center"><label
+                class="ml-3 font-sans font-bold text-lg leading-7 text-[#f5dd5d]">Products in PO</label></div>
+            <div class="relative overflow-x-auto">
+              <table class="w-full text-sm text-left rtl:text-right text-gray-500 dark:text-gray-400">
+                <thead class="text-sm font-semibold leading-[22px] text-gray-700 uppercase bg-gray-50">
+                  <tr>
+                    <th scope="col" class="text-center py-3 bg-white">SKU</th>
+                    <th scope="col" class="text-center py-3 bg-white">Barcode</th>
+                    <th scope="col" class="px-6 py-3 bg-white">Products</th>
+                    <th scope="col" class="px-6 py-3 bg-white">Category</th>
+                    <th scope="col" class="px-6 py-3 bg-white">Brand</th>
+                    <th scope="col" class="text-center py-3 bg-white">Quantity Ordered</th>
+                    <th scope="col" class="text-center py-3 bg-white">Quantity Received</th>
+                    <th scope="col" class="text-center py-3 bg-white">Cost</th>
+                    <th scope="col" class="text-center py-3 bg-white">Status</th>
+                  </tr>
+                </thead>
+                <tbody class="text-[#868788] font-sans font-normal text-sm leading-[22px]" id="table-body">
+
+                </tbody>
+              </table>
+            </div>
+          </div>
+          <textarea id="note" rows="4"
+            class="mb-[23px] block p-2.5 w-full text-sm text-gray-900 bg-[#D9D9D9] rounded-lg border border-gray-300 focus:ring-blue-500 focus:border-blue-500 dark:bg-gray-700 dark:border-gray-600 dark:placeholder-gray-400 dark:text-white dark:focus:ring-blue-500 dark:focus:border-blue-500"
+            placeholder="Notes" required="">{{ product_instance.notes }}</textarea>
+          <div class="flex bg-white items-center justify-between px-4 mb-4">
+            <div class="flex gap-1 items-center"><label
+                class="font-sans text-black font-extrabold text-3xl">SUB-TOTAL</label><label
+                class=" font-assistant font-semibold text-base">(excludes shipping)</label></div><label
+              class="font-sans text-black font-extrabold text-3xl" id="sub-total">0₪</label>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+{% endblock %}

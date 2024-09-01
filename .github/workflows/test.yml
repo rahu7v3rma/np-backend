@@ -1,0 +1,101 @@
+name: test
+
+on:
+  push:
+    branches:
+      - "main"
+      - "dev"
+    tags:
+      - "!*"
+  pull_request:
+    branches:
+      - "main"
+      - "dev"
+  workflow_call: {}
+
+jobs:
+  test:
+    runs-on: ubuntu-22.04
+
+    strategy:
+      matrix:
+        python-version: [ "3.11" ]
+        node-version: [ 20.x ]
+
+    steps:
+      - name: checkout repo
+        uses: actions/checkout@v4
+
+      - name: set up python ${{ matrix.python-version }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - name: cache pip
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/pip
+          key: ${{ runner.OS }}-pip-${{ hashFiles('requirements.txt') }}-${{ hashFiles('test_requirements.txt') }}
+          restore-keys:
+            ${{ runner.OS }}-pip-
+            ${{ runner.OS }}-
+
+      - name: install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: validate requirements
+        run: pip freeze | diff requirements.txt -
+
+      - name: install test dependencies
+        run: pip install -r test_requirements.txt
+
+      - name: configure
+        run: cp .env.dist .env
+
+      - name: set pythonpath
+        run: echo "PYTHONPATH=$(pwd)/src:$PYTHONPATH" >> $GITHUB_ENV
+
+      - name: lint
+        run: |
+          ruff format --check --diff src
+          ruff check src
+
+      - name: run migrations
+        run: |
+          python src/manage.py migrate
+          python src/manage.py makemigrations --check
+
+      - name: test
+        run: python src/manage.py test
+
+      - name: use node v${{ matrix.node-version }}
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node-version }}
+
+      - name: cache node modules
+        uses: actions/cache@v4
+        with:
+          path: node_modules
+          key: ${{ runner.OS }}-build-${{ hashFiles('**/package-lock.json') }}
+          restore-keys:
+            ${{ runner.OS }}-build-${{ env.cache-name }}
+            ${{ runner.OS }}-build-
+            ${{ runner.OS }}-
+
+      - name: install js dependencies
+        working-directory: js
+        run: npm install
+
+      - name: ensure js lock files are up to date
+        # check if any changes were made locally to the lock files. this helps
+        # us ensure all dependency changes were also made to the lock files.
+        # (this command will return a non-zero exit code if there are changes
+        # to any of the files)
+        run: git diff --exit-code js/package-lock.json
+
+      - name: lint js
+        working-directory: js
+        run: npm run lint

@@ -1,0 +1,170 @@
+{% extends 'admin/base.html' %}
+{% load static %}
+
+{% block extrastyle %}
+    {{ block.super }}
+    <link rel="stylesheet" href="{% static 'css/summary.css' %}">
+    <style>
+        .sortable {
+            cursor: pointer;
+        }
+        .asc::after {
+            content: " ↑";
+        }
+        .desc::after {
+            content: " ↓";
+        }
+    </style>
+{% endblock %}
+
+{% block extrahead %}
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://unpkg.com/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
+    <script src="https://www.unpkg.com/jquery@3.7.1/dist/jquery.min.js"></script>
+    <script src="{% static 'js/po_utils.js' %}"></script>
+    <script>
+        document.addEventListener('DOMContentLoaded', () => {
+            const sortTable = (column, ascending = true) => {
+                const table = document.querySelector('table');
+                const rows = Array.from(table.querySelectorAll('tbody tr'));
+                const sortedRows = rows.sort((a, b) => {
+                    const cellA = a.querySelectorAll('td')[column].textContent.trim();
+                    const cellB = b.querySelectorAll('td')[column].textContent.trim();
+
+                    if (ascending) {
+                        return cellA.localeCompare(cellB, undefined, { numeric: true });
+                    } else {
+                        return cellB.localeCompare(cellA, undefined, { numeric: true });
+                    }
+                });
+
+                const tbody = table.querySelector('tbody');
+                tbody.innerHTML = '';
+                sortedRows.forEach(row => tbody.appendChild(row));
+            };
+
+            document.querySelectorAll('th.sortable').forEach((header, index) => {
+                header.addEventListener('click', () => {
+                    const isAscending = !header.classList.contains('asc');
+                    sortTable(index, isAscending);
+                    header.classList.toggle('asc', isAscending);
+                    header.classList.toggle('desc', !isAscending);
+                });
+            });
+        });
+    </script>
+{% endblock %}
+
+{% block content %}
+<div>
+    <div class="flex flex-row justify-between">
+    <form method="get" class="flex flex-row" style="margin-bottom: 10px;">
+        {{ search_form.as_p }}
+        <button style="margin-left: 10px; height: 32px;  -webkit-border-radius: 5px;  -moz-border-radius: 5px; border-radius: 5px; background-image: -webkit-gradient(linear, left bottom, left top, color-stop(0.16, rgb(207, 207, 207)), color-stop(0.79, rgb(252, 252, 252))); background-image: -moz-linear-gradient(center bottom, rgb(207, 207, 207) 16%, rgb(252, 252, 252) 79%); background-image: linear-gradient(to top, rgb(207, 207, 207) 16%, rgb(252, 252, 252) 79%); padding: 3px; border: 1px solid #000; color: black; text-decoration: none; font-size: 12px;"  type="submit">Search</button>
+    </form>
+    <!-- Filtering Form -->
+    <form method="get" action="/admin/logistics/poorder/orders-summary/" class="mb-4" style="padding-bottom: 14px;">
+        <div class="flex gap-4 mb-4">
+            <div>
+                <label for="supplier">Supplier:</label>
+                <input type="text" id="supplier" name="supplier" value="{{ filter.supplier }}">
+            </div>
+            <div>
+                <label for="brand">Brand:</label>
+                <input type="text" id="brand" name="brand" value="{{ filter.brand }}">
+            </div>
+            <button type="submit" class="bg-[#417893] text-white px-2 h-12 rounded-lg hover:bg-[#264b5d]">Filter</button>
+        </div>
+    </form>
+    <div>
+        <button disabled class="button" id="exportXLSX" onclick="exportXLSX()">Export to XLSX</button>
+        <button disabled class="button" id="createPO" onclick="createPO()">Create PO</button>
+    </div>
+    </div>
+    <table class="!w-full !text-sm !text-left rtl:text-right !text-gray-500 !dark:text-gray-400">
+        <thead class="!text-sm !font-semibold !leading-[22px] !text-gray-700 uppercase !bg-gray-50">
+            <tr>
+                <th scope="col" class="!text-center !bg-white !max-w-14 !whitespace-normal align-middle">
+                    <div class="flex gap-1 justify-center">
+                        <input type="checkbox" id="option-all" name="difference-to-order" onclick="checkAll()"/>
+                    </div>
+                </th>
+                <th scope="col" class="!text-center !py-3 !bg-white !max-w-14 !whitespace-normal align-middle sortable">
+                    <div class="flex gap-1 justify-center">
+                        <label>Supplier</label>
+                    </div>
+                </th>
+                <th scope="col" class="!text-center !py-3 !bg-white !max-w-14 !whitespace-normal align-middle sortable">
+                    <div class="flex gap-1 justify-center">
+                        <label>Brand</label>
+                    </div>
+                </th>
+                <th scope="col" class="!text-center !py-3 !bg-white !max-w-14 !whitespace-normal align-middle">
+                    <div class="flex gap-1 justify-center">
+                        <label>SKU</label>
+                    </div>
+                </th>
+                <th scope="col" class="!text-center !py-3 !bg-white !max-w-14 !whitespace-normal align-middle">
+                    <div class="flex gap-1 justify-center">
+                        <label>Bar Code</label>
+                    </div>
+                </th>
+                <th scope="col" class="!text-center !py-3 !bg-white !max-w-14 !whitespace-normal align-middle">
+                    <div class="flex gap-1 justify-center">
+                        <label>Total Ordered</label>
+                    </div>
+                </th>
+                <th scope="col" class="!text-center !py-3 !bg-white !max-w-14 !whitespace-normal align-middle">
+                    <div class="flex gap-1 justify-center">
+                        <label>Cost Price</label>
+                    </div>
+                </th>
+                <th scope="col" class="!text-center !py-3 !bg-white !max-w-14 !whitespace-normal align-middle">
+                    <div class="flex gap-1 justify-center">
+                        <label>Saved Stock</label>
+                    </div>
+                </th>
+                <th scope="col" class="!text-center !py-3 !bg-white !max-w-14 !whitespace-normal align-middle">
+                    <div class="flex gap-1 justify-center">
+                        <label>In Transit Stock</label>
+                    </div>
+                </th>
+                <th scope="col" class="!text-center !py-3 !bg-white !max-w-14 !whitespace-normal align-middle">
+                    <div class="flex gap-1 justify-center">
+                        <label>DC Stock</label>
+                    </div>
+                </th>
+                <th scope="col" class="!text-center !py-3 !bg-white !max-w-14 !whitespace-normal align-middle">
+                    <div class="flex gap-1 justify-center">
+                        <label>Difference to Order</label>
+                    </div>
+                </th>
+            </tr>
+        </thead>
+        <tbody class="!font-sans !font-normal !text-sm !leading-[22px]" id="table-body">
+            {% for row in summary %}
+                <tr class="border-b">
+                    <td class="text-center border-b-white align-middle">
+                        <input type="checkbox" id="option-{{ row.product_id__id }}" name="difference-to-order"/>
+                    </td>
+                    <td id="supplier_name" class="text-center py-4 border-b-white align-middle">{{ row.product_id__supplier__name }}</td>
+                    <td id="brand_name" class="text-center py-4 border-b-white align-middle">{{ row.product_id__brand__name }}</td>
+                    <td id="sku" class="text-center py-4 border-b-white align-middle">{{ row.product_id__sku }}</td>
+                    <td id="reference" class="text-center py-4 border-b-white align-middle">{{ row.product_id__reference }}</td>
+                    <td id="total" class="text-center py-4 border-b-white align-middle">{{ row.total_ordered }}</td>
+                    <td id="price" class="text-center py-4 border-b-white align-middle">{{ row.product_id__cost_price }}</td>
+                    <td class="text-center py-4 border-b-white align-middle">-</td>
+                    <td class="text-center py-4 border-b-white align-middle">{{ row.total_in_transit }}</td>
+                    <td class="text-center py-4 border-b-white align-middle">{{ row.total_in_dc }}</td>
+                    <td class="text-center py-4 border-b-white align-middle">{{ row.difference_to_order }}</td>
+                </tr>
+            {% endfor %}
+        </tbody>
+    </table>
+    <div class="flex p-2 justify-end">
+        <button class="bg-[#417893] text-white px-2 h-12 rounded-lg hover:bg-[#264b5d]" onclick="window.location.href='{% url back %}'">
+            back
+        </button>
+    </div>
+</div>
+{% endblock %}

@@ -1,0 +1,19 @@
+<div class="file-upload" style="display: flex; flex-direction: column; gap: 5px;">
+    {% if widget.is_initial %}
+        <div style="display: flex; flex-direction: column; gap: 10px;">
+            <img src="{{ widget.value.url }}" style="width: max-content; height: max-content; max-width: 500px; max-height: 500px;">
+            {% if not widget.required %}
+                <div class="clearable-file-input" style="display: flex; align-items: center;">
+                    <label for="{{ widget.checkbox_id }}" style="min-width: 50px; width: 50px;">Remove:</label>
+                    <input style="position: relative; top: 1px; left: 2px;" type="checkbox" name="{{ widget.checkbox_name }}" id="{{ widget.checkbox_id }}"{% if widget.attrs.disabled %} disabled{% endif %}{% if widget.attrs.checked %} checked{% endif %}>
+                </div>
+            {% endif %}
+        </div>
+    {% endif %}
+    <div style="display: flex; align-items: center;">
+        {% if widget.is_initial %}
+            <label for="{{ widget.name }}" style="min-width: 50px; width: 50px;">{{ widget.input_text }}:</label>
+        {% endif %}
+        <input id="{{ widget.name }}" type="{{ widget.type }}" name="{{ widget.name }}" accept="image/*" {% include "django/forms/widgets/attrs.html" %}>
+    </div>
+</div>

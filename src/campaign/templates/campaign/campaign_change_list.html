@@ -1,0 +1,36 @@
+{% extends "admin/change_list.html" %}
+{% load i18n admin_urls %}
+{% block extrastyle %}
+    {{ block.super }}
+    <script src="https://cdn.jsdelivr.net/npm/sweetalert2@11"></script>
+    <script>
+        window.addEventListener("load", (event) => {
+        document.querySelector('button.button[type=submit]').addEventListener(
+            'click',(e)=>{
+                if(document.querySelector('option[value=activate_campaign]').selected)
+                {
+                    e.preventDefault();
+                    // show the dialogue box
+                    Swal.fire({
+                        text: 'send welcome messages to all employees',
+                        showDenyButton: true,
+                        confirmButtonText: 'Yes',
+                        denyButtonText: 'No',
+                    }).then((result) => {
+                        if (result.isConfirmed) {
+                            document.getElementById("send_email").value = "1";
+                            document.getElementById('changelist-form').submit();
+                        } else if (result.isDenied) {
+                            document.getElementById("send_email").value = "0";
+                            document.getElementById('changelist-form').submit();
+                        }
+                    });
+                }
+            });
+        });
+    </script>
+{% endblock %}
+{% block result_list %}
+    {{ block.super }}
+    <input type="hidden" name="send_email" value="1" id="send_email">
+{% endblock %}

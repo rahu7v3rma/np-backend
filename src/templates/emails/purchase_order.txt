@@ -1,0 +1,5 @@
+Here are the details of the purchase order:
+    Purchase Order Number: {{ po.id }}
+    Product Names: {{ product_name }}
+    Products SKU: {{ product_sku }}
+    Products Quantity Order: {{ quantity_order }}

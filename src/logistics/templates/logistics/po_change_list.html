@@ -1,0 +1,108 @@
+{% extends 'admin/change_list.html' %}
+{% load i18n admin_urls static admin_list %}
+
+{% block extrastyle %}
+{{ block.super }}
+<link rel="stylesheet" href="{% static "css/po_actions.css" %}">
+<link rel="stylesheet" href="{% static "css/summary.css" %}">
+{% endblock %}
+
+{% block extrahead %}
+{{ block.super }}
+    <script>
+        const urlParams = new URLSearchParams(window.location.search);
+        const start = urlParams.get("created_at__gte");
+        const end = urlParams.get("created_at__lt");
+
+        window.addEventListener('load', () => {
+                if (start) {
+                    document.getElementById("start-date").value = start.split(" ")[0];
+                }
+                if (end) {
+                    document.getElementById("end-date").value = end.split(" ")[0];
+                }
+
+                // change search position
+                const search = mform = document.getElementById("changelist-search");
+                // const actions = document.querySelector('.actions');
+                // search.before(actions);
+
+                // alignments
+                let action = document.querySelector(".actions");
+                toolbar = document.querySelector("#toolbar");
+                toolbar.style.backgroundColor = "transparent"
+                toolbar.style.border = "none"
+                toolbar.style.margin = "0px"
+                action.innerHTML = "<div id='actions-container'></div>" + action.innerHTML;
+                let label = document.querySelector(".actions>label");
+                document.querySelector('#actions-container').append(label);
+                let input = document.querySelector(".actions>input");
+                document.querySelector('#actions-container').append(input);
+                button = document.querySelector(".actions>button");
+                document.querySelector('#actions-container').append(button);
+                toolbar.innerHTML = toolbar.innerHTML + "<div id='search-toolbar'></div>"
+                let s_toolbar = document.getElementById("search-toolbar");
+                document.getElementById("search-toolbar").append(document.getElementById("changelist-search"));
+                s_toolbar.innerHTML = s_toolbar.innerHTML + "<div id='search-result'></div>";
+                let search_result_content = document.querySelector('#changelist-search>div>span');
+                if (search_result_content) {
+                    document.getElementById("search-result").append(search_result_content);
+                }
+                let actionContainer = document.querySelector('#actions-container');
+                actionContainer.appendChild(document.getElementById("custom_search_div"));
+                button = document.createElement('button');
+                button.onclick = function () {
+                    window.location.href = 'add/';
+                    return false;
+                };
+                button.textContent = 'Create PO';
+                button.className = "button";
+                actionContainer.insertBefore(button, actionContainer.firstChild);
+                let search_tool_bar = document.getElementById("search-toolbar");
+                search_tool_bar.style.display = "flex";
+                search_tool_bar.style.width = "375px";
+                search_tool_bar.style.justifyContent = 'space-between'
+            },
+        false);
+        const startDate = (value) => {
+            urlParams.set("created_at__gte", value);
+            window.location.href = window.location.pathname + "?" + urlParams.toString();
+        }
+        const endDate = (value) => {
+            urlParams.set("created_at__lt", value);
+            window.location.href = window.location.pathname + "?" + urlParams.toString();
+        }
+    </script>
+{% endblock %}
+
+{% block search %}
+    <div id="custom_search_div" class="flex gap-2 items-center [&>#toolbar]:w-full [&>div>#changelist-search>div]:items-center">
+        {{ block.super }}
+    </div>
+{% endblock %}
+
+{% block filters %}
+{% if cl.has_filters %}
+  <div id="changelist-filter">
+    <h2>{% translate 'Filter' %}</h2>
+    {% if cl.is_facets_optional or cl.has_active_filters %}<div id="changelist-filter-extra-actions">
+      {% if cl.is_facets_optional %}<h3>
+        {% if cl.add_facets %}<a href="{{ cl.remove_facet_link }}" class="hidelink">{% translate "Hide counts" %}</a>
+        {% else %}<a href="{{ cl.add_facet_link }}" class="viewlink">{% translate "Show counts" %}</a>{% endif %}
+      </h3>{% endif %}
+      {% if cl.has_active_filters %}<h3>
+        <a href="{{ cl.clear_all_filters_qs }}">&#10006; {% translate "Clear all filters" %}</a>
+      </h3>{% endif %}
+    </div>{% endif %}
+    {% for spec in cl.filter_specs %}{% admin_list_filter cl spec %}{% endfor %}
+    <div style="padding-right: 15px; padding-left: 15px; margin-bottom: 8px; display: flex; justify-content: space-between; align-items: center;">
+        <label>start date:</label>
+        <input id="start-date" type="date" onchange="startDate(this.value)" />
+    </div>
+    <div style="padding-right: 15px; padding-left: 15px; margin-bottom: 8px; display: flex; justify-content: space-between; align-items: center;">
+        <label>end date:</label>
+        <input id="end-date" type="date" onchange="endDate(this.value)" />
+    </div>
+  </div>
+{% endif %}
+{% endblock %}

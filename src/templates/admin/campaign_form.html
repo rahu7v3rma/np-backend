@@ -1,0 +1,294 @@
+{% extends 'admin/base_site.html' %}
+{% load i18n static %}
+{% load webpack_static from webpack_loader %}
+
+{% block title %}Campaign creation{% endblock title %}
+
+{% block extrahead %}
+<script>
+  window.NPConfig = {
+    currentWizardStep: "{{ wizard.steps.step0 }}",
+    baseSPAAssetsUrl: "{% webpack_static '' %}",
+    data: "{{ meta }}",
+  };
+</script>
+{% endblock %}
+
+{% block extrastyle %}
+<script src="/admin/jsi18n/"></script>
+<script src="https://ajax.googleapis.com/ajax/libs/jquery/2.1.3/jquery.min.js"></script>
+<script src="/static/admin/js/vendor/jquery/jquery.js"></script>
+<script src="/static/admin/js/calendar.js"></script>
+<script src="/static/admin/js/jquery.init.js"></script>
+<script src="/static/admin/js/admin/DateTimeShortcuts.js"></script>
+<script src="/static/admin/js/core.js"></script>
+<script src="/static/admin/js/admin/RelatedObjectLookups.js"></script>
+<script src="/static/admin/js/actions.js"></script>
+<script src="/static/admin/js/urlify.js"></script>
+<script src="/static/admin/js/prepopulate.js"></script>
+<script src="/static/admin/js/vendor/xregexp/xregexp.js"></script>
+<script src="/static/colorfield/colorfield.js"></script>
+<script src="/static/colorfield/jscolor/jscolor.min.js"></script>
+<script>
+  $(document).ready(function (){
+    if($('#id_2-1-products').length) {
+      $('table')[1]?.remove();
+    };
+    $('[name=0-start_date_time]').parent().hide();
+    $('[name=0-end_date_time]').parent().hide();
+    $('#id_0-start_date_time').removeAttr('required');
+    $('#id_0-end_date_time').removeAttr('required');
+    if($('[name=0-start_date_time]').val()){
+      $('[name=start_date_time_0]').val($('[name=0-start_date_time]').val().split('T')[0]);
+      $('[name=start_date_time_1]').val($('[name=0-start_date_time]').val().split('T')[1])
+    }
+    if($('[name=0-end_date_time]').val()){
+      $('[name=end_date_time_0]').val($('[name=0-end_date_time]').val().split('T')[0]);
+      $('[name=end_date_time_1]').val($('[name=0-end_date_time]').val().split('T')[1])
+    }
+    $('#form').on('submit', function() {
+    $('[name=0-start_date_time]').val(
+      `${$('[name=start_date_time_0]').val()}T${$('[name=start_date_time_1]').val()}`
+    );
+    $('[name=0-end_date_time]').val(
+      `${$('[name=end_date_time_0]').val()}T${$('[name=end_date_time_1]').val()}`
+    );
+    return true;
+  });
+
+  // create add button logic
+  $('#add_employee_group').on('click', () => {
+    const total = Number($('#id_1-TOTAL_FORMS').val());
+    const newId = total;
+
+    for (const field of ['employee_group', 'budget_per_employee', 'product_selection_mode', 'displayed_currency']) {
+      const lastElement = $(`[id*=-${field}]:eq(-1)`);
+      const newElement = lastElement.parent().clone(true);
+
+      $(newElement).find('select').attr('id', `id_1-${newId}-${field}`);
+      $(newElement).find('select').attr('name', `1-${newId}-${field}`);
+      $(newElement).find('label').attr('for', `id_1-${newId}-${field}`);
+
+      $('#add_employee_group').before(newElement);
+    }
+
+    $('#id_1-TOTAL_FORMS').val(total + 1);
+  });
+
+  /* fix re-rendring */
+  if($('div.container').length > 1) {
+    $('div.container:gt(0)').remove();
+  }
+})
+</script>
+
+<script>
+  function showHideDisplayedCurrency(selectElement) {
+    const employeeGroupId = Number(selectElement.id.match(/id_1-(\d*?)-.*/)[1]);
+
+    const displayedCurrencyLabel = document.querySelector(`label[for="id_1-${employeeGroupId}-displayed_currency"]`);
+    const displayedCurrencyField = document.getElementById(`id_1-${employeeGroupId}-displayed_currency`);
+    if (selectElement.value === 'MULTIPLE') {
+      displayedCurrencyField.style.display = 'block';
+      displayedCurrencyLabel.style.display = 'block';
+    } else {
+      displayedCurrencyField.style.display = 'none';
+      displayedCurrencyLabel.style.display = 'none';
+    }
+  }
+
+  document.addEventListener('DOMContentLoaded', function() {
+    const total = Number($('#id_1-TOTAL_FORMS').val());
+
+    for (let i = 0; i < total; i++) {
+      const currSelectionMode = document.getElementById(`id_1-${i}-product_selection_mode`);
+      if (currSelectionMode) {
+        showHideDisplayedCurrency(currSelectionMode);
+      }
+    }
+  });
+</script>
+
+<link rel="stylesheet" href="{% static "admin/css/forms.css" %}">
+<link rel="stylesheet" href="{% static "admin/css/widgets.css" %}">
+<style>
+  .main > .content {
+    display: flex;
+    position: relative;
+  }
+
+  div #content {
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+  }
+
+  form {
+    width: 100%;
+    position: relative;
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+  }
+
+  form > div {
+    display: flex;
+    justify-content: space-between;
+    overflow: hidden;
+    padding: 10px;
+    font-size: 0.8125rem;
+    border-bottom: 1px solid var(--hairline-color);
+    align-items: baseline;
+    width: 50%;
+    margin: auto;
+    margin-bottom: 16px;
+  }
+
+  input {
+    width: 50%
+  }
+  p.datetime {
+    width: 240px
+  }
+  textarea {
+    width: 50%;
+  }
+
+  select {
+    width: 50%;
+  }
+
+  input[type="submit"] {
+    width: auto;
+  }
+
+  label {
+    font-weight: bold;
+    color: #333;
+  }
+
+  p {
+    font-weight: bold;
+  }
+
+  .form-row > div {
+    width: 100%;
+  }
+
+  .flex-container {
+    justify-content: space-between;
+  }
+
+  .spaced-row {
+    width: 100%;
+    display: flex;
+    justify-content: space-between;
+  }
+
+  .wizard-button {
+    background: var(--button-bg);
+    padding: 10px 15px;
+    border: none;
+    border-radius: 4px;
+    color: var(--button-fg);
+    cursor: pointer;
+    transition: background 0.15s;
+    margin-top: 2px;
+  }
+
+  .wizard-button:hover {
+    background: var(--button-hover-bg);
+  }
+
+  .related-widget-wrapper {
+    width: 100%;
+    flex-grow: 0;
+    justify-content: end;
+    align-items: center;
+  }
+
+  a {
+    background: url('/static/admin/img/icon-addlink.svg') 0 1px no-repeat;
+    padding-left: 16px;
+    font-size: 0.75rem;
+    margin-top: 16px;
+    margin-bottom: 16px;
+  }
+
+  table {
+    margin-top: 16px;
+  }
+</style>
+{% endblock %}
+
+{% block content %}
+<span class="spaced-row">
+  <p>Campaign creation</p>
+  <p>Step {{ wizard.steps.step1 }} of {{ wizard.steps.count }}</p>
+</span>
+<form id="form" action="" method="post" enctype="multipart/form-data">
+  {% csrf_token %}
+  <table>
+    {{ wizard.management_form }}
+    {% if wizard.form.forms %}
+    {{ wizard.form.management_form }}
+    {% for form in wizard.form.forms %}
+      {{ form }}
+    {% endfor %}
+    {% if wizard.steps.step1 == 2 %}
+      <a id="add_employee_group" href="#">Add another employee group</a>
+    {% endif %}
+    {% else %}
+    {{ wizard.form }}
+    {% if wizard.steps.step1 == 1 %}
+    <div class="form-row field-start_date_time">
+      <div>
+        <div class="flex-container">
+          <label class="required">Start date time:</label>
+          <p class="datetime">
+            Date: <input type="text" name="start_date_time_0" class="vDateField" size="10" required=""
+              id="id_start_date_time_0">
+            <br>
+            Time: <input type="text" name="start_date_time_1" class="vTimeField" size="8" required=""
+              id="id_start_date_time_1">
+          </p>
+        </div>
+      </div>
+    </div>
+    <div class="form-row field-end_date_time">
+      <div>
+        <div class="flex-container">
+          <label class="required">End date time:</label>
+          <p class="datetime">
+            Date: <input type="text" name="end_date_time_0" class="vDateField" size="10" required=""
+              id="id_end_date_time_0">
+            <br>
+            Time: <input type="text" name="end_date_time_1" class="vTimeField" size="8" required=""
+              id="id_end_date_time_1">
+        </div>
+      </div>
+    </div>
+    {% endif %}
+    {% endif %}
+  </table>
+  <div class="spaced-row">
+    <div>
+      {% if wizard.steps.prev %}
+        <button name="wizard_goto_step" class="wizard-button" type="submit" value="{{ wizard.steps.first }}" {% if wizard.steps.current == "2" %}formnovalidate{% endif %}>
+          {% translate "First" %}
+        </button>
+        <button name="wizard_goto_step" class="wizard-button" type="submit" value="{{ wizard.steps.prev }}" {% if wizard.steps.current == "2" %}formnovalidate{% endif %}>
+          {% translate "Previous" %}
+        </button>
+      {% endif %}
+    </div>
+    <div>
+      {% if wizard.steps.next %}
+        <input type="submit" value="{% trans "Next" %}" />
+      {% else %}
+        <input type="submit" value="{% trans "Submit" %}" />
+      {% endif %}
+    </div>
+  </div>
+</form>
+{% endblock %}

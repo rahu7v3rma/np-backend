@@ -1,0 +1,19 @@
+<!-- order_confirmation_email.html -->
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>Purchase Order</title>
+</head>
+<body>
+    <h2>Details</h2>
+    <p>Here are the details of the purchase order:</p>
+    <ul>
+        <li>Purchase Order Number: {{ po.id }}</li>
+        <li>Product Names: {{ product_name }}</li>
+        <li>Products SKU: {{ product_sku }}</li>
+        <li>Products Quantity Order: {{ quantity_order }}</li>
+        <!-- Add more details as needed -->
+    </ul>
+</body>
+</html>

@@ -1,0 +1,212 @@
+[
+    {
+        "model": "inventory.supplier",
+        "pk": 1,
+        "fields": {
+            "name": "supplier1",
+            "name_en": "supplier1",
+            "name_he": "supplier1 he",
+            "address_city": null,
+            "address_city_en": null,
+            "address_city_he": null,
+            "address_street": null,
+            "address_street_en": null,
+            "address_street_he": null,
+            "address_street_number": null,
+            "address_street_number_en": null,
+            "address_street_number_he": null,
+            "email": null,
+            "phone_number": null
+        }
+    },
+    {
+        "model": "inventory.brand",
+        "pk": 1,
+        "fields": {
+            "name": "brand1",
+            "name_en": "brand1",
+            "name_he": "brand1 he",
+            "logo_image": ""
+        }
+    },
+    {
+        "model": "inventory.product",
+        "pk": 1,
+        "fields": {
+            "brand": 1,
+            "supplier": 1,
+            "reference": "12345",
+            "sale_price": 14,
+            "name": "product1",
+            "name_en": "product1",
+            "name_he": "product1 he",
+            "product_kind": "PHYSICAL",
+            "product_type": "REGULAR",
+            "description": "desc",
+            "description_en": "desc",
+            "description_he": "",
+            "sku": "1234",
+            "link": "",
+            "active": true,
+            "cost_price": 5,
+            "delivery_price": null,
+            "logistics_rate_cost_percent": null,
+            "google_price": null,
+            "technical_details": "",
+            "warranty": "",
+            "exchange_value": null,
+            "exchange_policy": ""
+        }
+    },
+    {
+        "model": "inventory.productimage",
+        "pk": 1,
+        "fields": {
+            "product": 1,
+            "main": true,
+            "image": "934282de-6c0c-4209-b1aa-bd1a8f0f7c0a.jpeg"
+        }
+    },
+    {
+        "model": "inventory.category",
+        "pk": 1,
+        "fields": {
+            "name": "cat1",
+            "name_en": "cat1",
+            "name_he": "cat1 he",
+            "icon_image": ""
+        }
+    },
+    {
+        "model": "inventory.category",
+        "pk": 2,
+        "fields": {
+            "name": "cat2",
+            "name_en": "cat2",
+            "name_he": "cat2 he",
+            "icon_image": ""
+        }
+    },
+    {
+        "model": "inventory.tag",
+        "pk": 1,
+        "fields": {
+            "name": "tag1",
+            "name_en": "tag1",
+            "name_he": "tag he"
+        }
+    },
+    {
+        "model": "campaign.organization",
+        "pk": 1,
+        "fields": {
+            "name": "name",
+            "name_en": "name",
+            "name_he": "name he",
+            "manager_full_name": "full name",
+            "manager_phone_number": "1234",
+            "manager_email": "testh@gmail.com",
+            "logo_image": ""
+        }
+    },
+    {
+        "model": "campaign.campaign",
+        "pk": 1,
+        "fields": {
+            "organization_id": 1,
+            "name": "campaign",
+            "name_en": "campaign he",
+            "name_he": "",
+            "start_date_time": "2024-05-09T17:50:34Z",
+            "end_date_time": "2024-05-09T17:50:36Z",
+            "code": "123456",
+            "campaign_type": "CampaignTypeEnum.EVENT",
+            "ship_to": "CampaignShippingEnum.TO_OFFICE",
+            "status": "ACTIVE",
+            "login_page_title": "",
+            "login_page_subtitle": "",
+            "main_page_first_banner_title": "",
+            "main_page_first_banner_subtitle": "",
+            "main_page_first_banner_image": "",
+            "main_page_first_banner_mobile_image": "",
+            "main_page_second_banner_title": "",
+            "main_page_second_banner_subtitle": "",
+            "main_page_second_banner_background_color": "",
+            "main_page_second_banner_text_color": "",
+            "sms_sender_name": "",
+            "sms_welcome_text": "",
+            "email_welcome_text": ""
+        }
+    },
+    {
+        "model": "campaign.campaign",
+        "pk": 2,
+        "fields": {
+            "organization_id": 1,
+            "name": "test",
+            "name_en": "test",
+            "name_he": null,
+            "start_date_time": "2024-05-09T17:50:34Z",
+            "end_date_time": "2024-05-09T17:50:36Z",
+            "code": "12345678",
+            "campaign_type": "CampaignTypeEnum.EVENT",
+            "ship_to": "CampaignShippingEnum.TO_OFFICE",
+            "status": "ACTIVE",
+            "login_page_title": "",
+            "login_page_subtitle": "",
+            "main_page_first_banner_title": "",
+            "main_page_first_banner_subtitle": "",
+            "main_page_first_banner_image": "",
+            "main_page_first_banner_mobile_image": "",
+            "main_page_second_banner_title": "",
+            "main_page_second_banner_subtitle": "",
+            "main_page_second_banner_background_color": "",
+            "main_page_second_banner_text_color": "",
+            "sms_sender_name": "",
+            "sms_welcome_text": "",
+            "email_welcome_text": ""
+        }
+    },
+    {
+        "model": "campaign.employeegroup",
+        "pk": 1,
+        "fields": {
+            "name": "emp group name",
+            "organization_id": 1,
+            "auth_method": "AUTH_ID"
+        }
+    },
+    {
+        "model": "campaign.employeegroupcampaign",
+        "pk": 1,
+        "fields": {
+            "campaign": 1,
+            "employee_group": 1,
+            "budget_per_employee": 9
+        }
+    },
+    {
+        "model": "campaign.employeegroupcampaignproduct",
+        "pk": 1,
+        "fields": {
+            "employee_group_campaign_id": 1,
+            "product_id": 1
+        }
+    },
+    {
+        "model": "inventory.categoryproduct",
+        "pk": 1,
+        "fields": {
+            "category_id": 1,
+            "product_id": 1
+        }
+    },
+    {
+        "model": "inventory.tagproduct",
+        "pk": 1,
+        "fields": {
+            "tag_id": 1,
+            "product_id": 1
+        }
+    }
+]

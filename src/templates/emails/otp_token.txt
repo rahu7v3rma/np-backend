@@ -1,0 +1,3 @@
+OTP Token
+
+You otp token is: {{ otp_token }}

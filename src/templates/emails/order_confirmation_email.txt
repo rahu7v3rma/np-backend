@@ -1,0 +1,7 @@
+Order Confirmation
+
+Thank you for your order. Here are the details:
+
+Order Reference: {{ order.reference }}
+Order Date: {{ order.order_date_time }}
+Products Ordered: {{ order.ordered_product_names }}

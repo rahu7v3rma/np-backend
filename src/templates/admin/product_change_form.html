@@ -1,0 +1,324 @@
+{% extends 'admin/change_form.html' %}
+{% load static %}
+
+{% block admin_change_form_document_ready %}
+    {{ block.super }}
+    <script src="https://ajax.googleapis.com/ajax/libs/jquery/2.1.3/jquery.min.js"></script>
+    <script>
+        $('[type=checkbox][id*="id_images"]').not("[id*='DELETE']").each((idx, el) => {
+            $(el).on('change', () => {
+                if ($(el).is(":checked")) {
+                    $('[type=checkbox][id*="id_images"]').not("[id*='DELETE']").each((idx, ell) => {
+                        if (el != ell) {
+                            $(ell).prop("checked", false)
+                        }
+                    })
+                }
+            })
+        })
+    </script>
+    <script>
+        let salePriceOld = $('#id_sale_price').val();
+        let costPriceOld = $('#id_cost_price').val();
+        let deliveryPriceOld = $('#id_delivery_price').val();
+        let logisticsRateCostPercentOld = $('#id_logistics_rate_cost_percent').val();
+        let googlePriceOld = $('#id_google_price').val();
+        $('document').ready(() => {
+            $('.field-total_cost .readonly').text(+$('.field-total_cost .readonly').text() || '')
+            $('.field-logistics_rate_cost_percent').after($('.field-total_cost'));
+
+            $('#id_delivery_price').prop(
+                'disabled',
+                !['LARGE_PRODUCT', 'SENT_BY_SUPPLIER'].includes($('#id_product_type :selected').val())
+            );
+
+            $('#id_cost_price').on('change', function () {
+                calculate_total_cost($('#id_product_type :selected').val())
+            });
+            $('#id_delivery_price').on('change', function () {
+                calculate_total_cost($('#id_product_type :selected').val())
+            });
+            $('#id_logistics_rate_cost_percent').on('change', function () {
+                calculate_total_cost($('#id_product_type :selected').val())
+            });
+
+            const calculate_total_cost = (productType) => {
+                let costPrice = Number($('#id_cost_price').val());
+                const deliveryPrice = Number($('#id_delivery_price').val());
+                const logisticsRateCostPercent = Number($('#id_logistics_rate_cost_percent').val());
+
+                if (logisticsRateCostPercent) {
+                    costPrice *= (1 + logisticsRateCostPercent / 100);
+                }
+
+                if (deliveryPrice && ['LARGE_PRODUCT', 'SENT_BY_SUPPLIER'].includes(productType)) {
+                    costPrice += deliveryPrice;
+                }
+
+                $('.field-total_cost .readonly').text(costPrice.toFixed(1));
+            };
+
+
+            const fetchPricesForSKU = (sku) => {
+                const skuPrices = JSON.parse('{{ products|escapejs }}');
+                const product = skuPrices.find(item => item.sku === sku);
+
+                return product || {
+                    cost_price: 0,
+                    delivery_price: 0,
+                    logistics_rate_cost_percent: 0,
+                    google_price: 0,
+                    sale_price: 0,
+                    brand: null,
+                };
+            };
+            const updateSKUOptions = () => {
+                const selectedSKUs = []
+                $('.sku-dropdown').each((idx, el) => {
+                    const selectedSKU = $(el).val();
+                    if (selectedSKU){
+                        selectedSKUs.push(selectedSKU);
+                    }
+                });
+                $('.sku-dropdown').each((idx, el) => {
+                    const currentVal = $(el).val();
+                    $(el).find('option').each((optIdx, option) => {
+                        if (selectedSKUs.includes($(option).val()) && $(option).val() !== currentVal) {
+                            $(option).hide();
+                        } else {
+                            $(option).show();
+                        }
+                    });
+                });
+            };
+
+            const updatePriceFields = () => {
+                let totalCostPrice = 0;
+                let totalDeliveryPrice = 0;
+                let totalLogisticsCostPercent = 0;
+                let totalGooglePrice = 0;
+                let totalSalePrice = 0;
+                let brand = null;
+                let _brand = null;
+
+
+                $('.sku-dropdown').each((idx, el) => {
+                    const selectedSKU = $(el).val();
+                    if (idx === 0) {
+                        let sku = $(el).val();
+                        _brand = fetchPricesForSKU(sku).brand;
+                    }
+                    if (selectedSKU) {
+                        const prices = fetchPricesForSKU(selectedSKU);
+                        totalCostPrice += prices.cost_price;
+                        totalDeliveryPrice += prices.delivery_price;
+                        totalLogisticsCostPercent += prices.logistics_rate_cost_percent;
+                        totalGooglePrice += prices.google_price;
+                        totalSalePrice += prices.sale_price;
+                        brand = _brand;
+                    }
+                });
+
+                // Update fields with total values
+                $('#id_cost_price').val(totalCostPrice.toFixed(2));
+                $('#id_brand').val(brand);
+                $('#id_delivery_price').val(totalDeliveryPrice.toFixed(2));
+                $('#id_logistics_rate_cost_percent').val(totalLogisticsCostPercent.toFixed(2));
+                $('#id_google_price').val(totalGooglePrice.toFixed(2));
+                $('#id_sale_price').val(totalSalePrice.toFixed(2));
+
+                calculate_total_cost($('#id_product_type').val());
+                updateSKUOptions();
+            };
+
+            const addDropdownWithButton = (selectedSKU = '') => {
+                $('#dropdown_container button').last().remove();
+                const newDropdown = $('<select class="sku-dropdown" style="width: 10vw; margin-left: 10px;"><option value="">Select SKU</option></select>');
+
+                const skus = JSON.parse('{{ sku_choices|escapejs }}');
+                newDropdown.append(skus.map(sku => `<option value="${sku}" ${sku === selectedSKU ? 'selected' : ''}>${sku}</option>`));
+
+                const newButton = $('<button style="background: none; border: none; margin-left: 10px; font-size: 18px;" type="button"> + </button>');
+
+                $('#dropdown_container').append(newDropdown);
+                $('#dropdown_container').append(newButton);
+
+                newDropdown.on('change', updatePriceFields);
+
+                newButton.on('click', () => {
+                    addDropdownWithButton();
+                });
+                updateSKUOptions();
+            };
+
+            const initializeDropdowns = () => {
+                const initialSkus = $('#id_sku').val().split(',').filter(Boolean);
+                if (initialSkus.length > 0) {
+                    initialSkus.forEach(sku => {
+                        addDropdownWithButton(sku);
+                    });
+                } else {
+                    addDropdownWithButton();
+                }
+            };
+
+
+            const toggle_sku_features = (productType) => {
+                const skuInput = $('#id_sku');
+                let dropdownContainer = $('#dropdown_container'); // Container for dropdowns and buttons
+                let selectedSupplierOld = $('#id_supplier').val();
+                let selectedBrandOld = $('#id_brand').val();
+                if (productType === 'BUNDLE') {
+                    salePriceOld = $('#id_sale_price').val();
+                    costPriceOld = $('#id_cost_price').val();
+                    deliveryPriceOld = $('#id_delivery_price').val();
+                    logisticsRateCostPercentOld = $('#id_logistics_rate_cost_percent').val();
+                    googlePriceOld = $('#id_google_price').val();
+                    if (skuInput.length > 0) {
+                        if (dropdownContainer.length === 0) {
+                            // Create and insert the container
+                            dropdownContainer = $('<div id="dropdown_container"></div>');
+                            dropdownContainer.insertAfter(skuInput);
+                            skuInput.hide();
+                        }
+                        $('#id_supplier').prop('disabled', true);
+                        handleLink('change_id_supplier', true);
+                        handleLink('add_id_supplier', true);
+                        handleLink('view_id_supplier', true);
+
+                        $('#id_cost_price').prop('disabled', true);
+                        $('#id_brand').prop('disabled', true);
+                        handleLink('change_id_brand', true);
+                        handleLink('add_id_brand', true);
+                        handleLink('view_id_brand', true);
+                        $('#id_delivery_price').prop('disabled', true);
+                        $('#id_logistics_rate_cost_percent').prop('disabled', true);
+                        $('#id_sale_price').prop('disabled', true);
+                        $('#id_google_price').prop('disabled', true);
+                        const isEditPage = '{{ original.pk }}' !== '';
+
+                        if (isEditPage) {
+                            initializeDropdowns();
+                        } else {
+                            addDropdownWithButton();
+                        }
+                    }
+                    selectedSupplierOld = $('#id_supplier').val();
+                    selectedBrandOld = $('#id_brand').val();
+                    $('#id_supplier').val(null);
+                    updatePriceFields()
+                } else {
+                    skuInput.show();
+
+                    $('#id_supplier').prop('disabled', false);
+                    handleLink('change_id_supplier', false);
+                    handleLink('add_id_supplier', false);
+                    handleLink('view_id_supplier', false);
+                    $('#id_brand').prop('disabled', false);
+                    handleLink('change_id_brand', false);
+                    handleLink('add_id_brand', false);
+                    handleLink('view_id_brand', false);
+                    $('#id_cost_price').prop('disabled', false);
+                    $('#id_delivery_price').prop('disabled', false);
+                    $('#id_logistics_rate_cost_percent').prop('disabled', false);
+                    $('#id_sale_price').prop('disabled', false);
+                    $('#id_google_price').prop('disabled', false);
+                    $('#dropdown_container').remove();
+                    $('#id_supplier').val(selectedSupplierOld);
+                    $('#id_brand').val(selectedBrandOld);
+                    $('#id_sale_price').val(salePriceOld);
+                    $('#id_cost_price').val(costPriceOld);
+                    $('#id_delivery_price').val(deliveryPriceOld);
+                    $('#id_logistics_rate_cost_percent').val(logisticsRateCostPercentOld);
+                    $('#id_google_price').val(googlePriceOld);
+                    calculate_total_cost($('#id_product_type :selected').val());
+                }
+            };
+            const handleLink = (selector, disable=false) => {
+                document.getElementById(selector).hidden = disable;
+            }
+            const gatherSKUs = () => {
+                if ($('#id_product_kind').val() === "BUNDLE") {
+                    let dropdownContainer = $('#dropdown_container'); // Container for dropdowns and buttons
+                    if (dropdownContainer.length > 0) {
+                        let selectedSKUs = [];
+                        $('.sku-dropdown').each((idx, el) => {
+                            const sku = $(el).val();
+                            if (sku) {
+                                selectedSKUs.push(sku);
+                            }
+                        });
+                        $('#id_sku').val(selectedSKUs.join(','));
+
+                        $('#id_cost_price').prop('disabled', false);
+                        $('#id_brand').prop('disabled', false);
+                        $('#id_delivery_price').prop('disabled', false);
+                        $('#id_supplier').prop('disabled', false);
+                        $('#id_logistics_rate_cost_percent').prop('disabled', false);
+                        $('#id_google_price').prop('disabled', false);
+                        $('#id_sale_price').prop('disabled', false);
+                    }
+                }
+            };
+            const errorMessage = $('<div id="supplier-error-message" style="color: red; margin-top: 6px;"></div>');
+            errorMessage.insertAfter($('#id_supplier'));
+            const toggleSupplierRequirement = (productKind) => {
+                const supplierField = $('#id_supplier');
+
+                if (productKind !== 'BUNDLE' && !supplierField.val()) {
+                    errorMessage.text("This field is required")
+                    supplierField.attr("style", "border: 1px solid red");
+                    return false;
+                }
+                return true;
+            };
+
+
+            $('#id_product_kind').on('change', function () {
+                const productKind = this.value;
+                toggle_sku_features(productKind);
+            });
+
+            $('#id_product_type').on('change', function () {
+                if (!['LARGE_PRODUCT', 'SENT_BY_SUPPLIER'].includes(this.value)) {
+                    $('#id_delivery_price').val('').prop('disabled', true)
+                } else {
+                    $('#id_delivery_price').prop('disabled', false)
+                }
+                calculate_total_cost(this.value);
+            });
+
+            toggle_sku_features($('#id_product_kind').val());
+            calculate_total_cost($('#id_product_type').val());
+
+            $('.sku-dropdown').on('change', updatePriceFields);
+            $('form').on('submit', function (event) {
+                if (!toggleSupplierRequirement($('#id_product_kind').val())) {
+                    event.preventDefault();
+                }
+                gatherSKUs();
+            });
+
+            const product_edit_page = '{{ object_id }}' !== 'None';
+            const supplier_brands = JSON.parse('{{ supplier_brands|escapejs }}');
+            const handle_supplier_brands_select = (selected_supplier_id) => {
+                $('select[name="brand"]').empty();
+                supplier_brands.filter(supplier_brand=>supplier_brand.id === +selected_supplier_id).forEach(supplier_brand=>{
+                    $('select[name="brand"]').append(`<option value="${supplier_brand.brands__id}">${supplier_brand.brands__name}</option>`)
+                });
+            }
+            if(product_edit_page) {
+                const selected_brand_id = $('select[name="brand"]').val();
+                handle_supplier_brands_select($('select[name="supplier"]').val())
+                $('select[name="brand"]').val(selected_brand_id);
+            } else {
+                $('select[name="brand"]').attr('disabled',true);
+            }
+            $('select[name="supplier"]').on('input', (e) => {
+                handle_supplier_brands_select(e.target.value);
+                $('select[name="brand"]').prepend('<option value selected>---------</option>');
+                $('select[name="brand"]').removeAttr('disabled');
+            });
+        })
+    </script>
+{% endblock %}

@@ -1,0 +1,37 @@
+Hi,
+
+New purchase order, attached here are the delivery instructions.
+
+A few points and lessons from the previous holiday:
+
+We request to receive a 13-digit barcode (if you haven’t sent it) for all products that are shipped to us to the warehouse – without it, the warehouse won’t be able to receive and pick the products.
+
+Products that are shipped loose should be placed in a consolidated carton and marked so we know it’s a loose carton. In the previous holiday, there were too many small products thrown on the pallet, resulting in damage to the products. Additionally, we would like as many homogeneous pallets as possible.
+
+Please link every purchase order to the delivery note and invoice – this is very, very important.
+
+After each purchase order is sent, please confirm that you received the order so we know it has been approved. If there are products that are delayed, we would like to know the dates. For products that are out of stock and have an alternative, we would be happy to receive it. The goal is for the customers to receive physical gifts and not vouchers, and if an alternative can be found, that’s great.
+
+In the Excel of the purchase order, there is a column for the current inventory status – please, as in previous inventory checks, if there are products that are out of stock, low stock (we would like to know the exact number), not yet received, etc., please send an update by email.
+
+Delivery must be coordinated. To coordinate delivery, please contact: Contact 1 - Roni - 052-952-8829 Contact 2 - Yotam - 052-574-3740
+
+*** Coordination can also be done by reply email.
+
+Delivery Address: Orian Warehouse, Pekar 12, Kiryat Malakhi
+
+Contacts for receiving goods at the warehouse:
+
+Warehouse Contact 1: Eli - 054-253-1259 Warehouse Contact 2: Yaki - 050-877-7556 Nickels Contact 1: Yotam - 050-742-8054
+
+Thank you very much for everything and have a great day!
+
+Roni 052-952-8829
+
+{% for product in purchase_order_products %}
+Product SKU: {{ product.product_id.sku }}
+Product barcode: {{ product.product_id.reference }}
+Product Name: {{ product.product_id.name }}
+Quantity Ordered: {{ product.quantity_ordered }}
+------------------------------------------------
+{% endfor %}

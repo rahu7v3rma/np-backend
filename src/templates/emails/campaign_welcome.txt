@@ -1,0 +1,6 @@
+{{ subject }}
+
+{{ body }}
+
+
+{{ campaign_link }}

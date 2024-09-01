@@ -1,0 +1,244 @@
+{% extends "admin/base_site.html" %}
+{% load i18n admin_urls static admin_modify %}
+
+{% block extrahead %}{{ block.super }}
+<script src="{% url 'admin:jsi18n' %}"></script>
+    <script src="{% static "js/status_form_js.js" %}"></script>
+    <script src="{% static 'js/campaign_requests.js' %}"></script>
+    <script>
+    function handleExportChange() {
+        const selectExportDropDown = document.getElementById('selectExportDropDown');
+        const goButton = document.getElementById('action_go_button');
+
+        if (selectExportDropDown.value === '1') {
+            goButton.onclick = () => {
+                exportCampaignProducts('{{ campaign_code }}', '{{ object_id }}');
+                selectExportDropDown.selectedIndex = 0;
+                handleExportChange();
+            }
+        } else if (selectExportDropDown.value === '2') {
+            goButton.onclick = () => {
+                exportEmployeeSelection('{{ campaign_code }}', '{{ object_id }}');
+                selectExportDropDown.selectedIndex = 0;
+                handleExportChange();
+            }
+        } else {
+            goButton.onclick = () => null;
+        }
+    }
+    </script>
+{{ media }}
+{% endblock %}
+
+{% block extrastyle %}
+{{ block.super }}<link rel="stylesheet" href="{% static "admin/css/forms.css" %}">
+<!-- TODO: Make a seperate style/css file and move this class there. -->
+<style>
+.disabled {
+  pointer-events: none;
+  opacity: 0.6;
+}
+</style>
+{% endblock %}
+
+{% block coltype %}colM{% endblock %}
+
+{% block bodyclass %}{{ block.super }} app-{{ opts.app_label }} model-{{ opts.model_name }} change-form{% endblock %}
+
+{% if not is_popup %}
+{% block breadcrumbs %}
+<div class="breadcrumbs">
+<a href="{% url 'admin:index' %}">{% translate 'Home' %}</a>
+&rsaquo; <a href="{% url 'admin:app_list' app_label=opts.app_label %}">{{ opts.app_config.verbose_name }}</a>
+&rsaquo; {% if has_view_permission %}<a href="{% url opts|admin_urlname:'changelist' %}">{{ opts.verbose_name_plural|capfirst }}</a>{% else %}{{ opts.verbose_name_plural|capfirst }}{% endif %}
+&rsaquo; {% if add %}{% blocktranslate with name=opts.verbose_name %}Add {{ name }}{% endblocktranslate %}{% else %}{{ original|truncatewords:"18" }}{% endif %}
+</div>
+{% endblock %}
+{% endif %}
+
+{% block content %}<div id="content-main" style="position: relative; margin-top: 10px;">
+
+<form onsubmit="return false" {% if has_file_field %}enctype="multipart/form-data" {% endif %}{% if form_url %}action="{{ form_url }}" {% endif %}method="post" id="{{ opts.model_name }}_form" novalidate>{% csrf_token %}{% block form_top %}{% endblock %}
+<div style="position: relative;">
+{% if is_popup %}<input type="hidden" name="{{ is_popup_var }}" value="1">{% endif %}
+{% if to_field %}<input type="hidden" name="{{ to_field_var }}" value="{{ to_field }}">{% endif %}
+{% if save_on_top %}{% block submit_buttons_top %}{% submit_row %}{% endblock %}{% endif %}
+{% if errors %}
+    <p class="errornote">
+    {% blocktranslate count counter=errors|length %}Please correct the error below.{% plural %}Please correct the errors below.{% endblocktranslate %}
+    </p>
+    {{ adminform.form.non_field_errors }}
+{% endif %}
+
+{% block after_field_sets %}{% endblock %}
+<div style="display: flex; align-items: center; margin-bottom: 10px; position: absolute; right: 0px; top: -50px;">
+<div style="display: flex; align-items: center; padding-right: 20px">
+    <select
+        name="selectExportDropDown"
+        id="selectExportDropDown"
+        style="margin-right: 10px; height: 37px;"
+        onchange="handleExportChange()"
+        >
+        <option value="0">Select Export</option>
+        <option value="1">Export campaign products as XLSX</option>
+        <option value="2">Export employee selections as XLSX</option>
+
+    </select>
+    <button id="action_go_button" class="button" style="padding: 6px">Go</button>
+</div>
+    <select
+      name="preview"
+      id="previewSelect"
+      style="margin-right: 10px; height: 37px;"
+      onchange="if (this.value) {
+        // replace only the last occurrence of 0, since server-rendered
+        // reversed url can't take into account a javascript value
+        window.open('{% url 'admin:campaign_preview_view' object_id 0 %}'.replace(/0([^0]*)$/, `${this.value}$1`),'_blank');
+      }"
+    >
+        <option value="">Select Group to Preview Campaign</option>
+        {% for group in employee_groups %}
+            <option value="{{ group.id }}">{{ group.employee_group_name }}</option>
+        {% endfor %}
+    </select>
+
+    <input type="submit" value="Edit" onclick="window.open('{% url 'admin:campaign_campaign_edit' %}?campaign={{ object_id }}','_blank')">
+    <div>
+        <input type="submit" class="btn btn-primary disabled" value="Resend Invitation" id="resend_invitation_button" style="margin-left: 10px;">
+    </div>
+    
+</div>
+
+<div class="js-inline-admin-formset inline-group">
+    <div class="tabular inline-related">
+        <fieldset class="module">
+            <table>
+                <thead>
+                    <tr>
+                        {% if campaign_active %}
+                          <th class="column-">
+                            <input type="checkbox" id="select_all">
+                          </th>
+                        {% endif %}
+                        <th class="original" style="display: none;"></th>
+                        <th class="column-">EMPLOYEE NAME</th>
+                        <th class="column-">EMPLOYEE GROUP</th>
+                        <th class="column-">EMPLOYEE ORDERS</th>
+                        <th class="column-"></th>
+                        <th class="column-"></th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {% for row in status %}
+                    <tr class="form-row">
+                        {% if campaign_active %}
+                          <td class="field">
+                            {% if not row.order_id %}
+                              <input type="checkbox" class="row-checkbox" id="row-checkbox_{{ row.campaign_employee_id }}" name="" value="{{ row.campaign_employee_id }}">
+                            {% endif %}
+                          </td>
+                        {% endif %}
+                        <td class="original" style="display: none;"></td>
+                        <td class="field" style="vertical-align: middle;">
+                            {{ row.employee_first_name }} {{ row.employee_last_name }}
+                        </td>
+                        <td class="field" style="vertical-align: middle;">
+                            {{ row.employee_group_name }}
+                        </td>
+                        <td class="field" style="vertical-align: middle;">
+                            {% if row.ordered_products %}{{ row.ordered_products }}{% endif %}
+                        </td>
+                        <td>
+                            {% if row.order_id %}
+                                <input type="submit" value="Change" onclick="window.open('{% url 'admin:campaign_order_change' row.order_id %}?_popup=1','_blank', 'width=800, height=600')">
+                            {% endif %}
+                        </td>
+                        <td>
+                            {% if campaign_active and row.campaign_employee_id %}
+                                <input type="submit" value="Impersonate" onclick="window.open('{% url 'admin:campaign_impersonate_view' object_id row.campaign_employee_id %}','_blank')">
+                            {% endif %}
+                        </td>
+                    </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+        </fieldset>
+    </div>
+</div>
+
+{% block admin_change_form_document_ready %}
+    <script id="django-admin-form-add-constants"
+            src="{% static 'admin/js/change_form.js' %}"
+            {% if adminform and add %}
+                data-model-name="{{ opts.model_name }}"
+            {% endif %}
+            async>
+    </script>
+    <script>
+        document.addEventListener('DOMContentLoaded', function() {
+            const form = document.getElementById('campaign_invitation_form');
+            const resendButton = document.getElementById('resend_invitation_button');
+            const selectAllCheckbox = document.getElementById('select_all');
+            const rowCheckboxes = document.querySelectorAll('.row-checkbox');
+            const selectedEmployees = [];
+    
+            // Function to enable or disable the resend button based on checkbox selection
+            function updateResendButtonState() {
+                const anyChecked = Array.from(rowCheckboxes).some(checkbox => checkbox.checked);
+                resendButton.classList.toggle('disabled', !anyChecked);
+            }
+    
+            // Function to update the selectedEmployees array and set its value in a hidden input
+            function updateSelectedEmployees() {
+                selectedEmployees.length = 0;
+                rowCheckboxes.forEach(checkbox => {
+                    if (checkbox.checked) {
+                        selectedEmployees.push(checkbox.value);
+                    }
+                });
+                document.getElementById('campaign_resend_invitation_input').value = JSON.stringify(selectedEmployees);
+            }
+    
+            // Event listener for the "Select All" checkbox
+            selectAllCheckbox.addEventListener('change', function() {
+                rowCheckboxes.forEach(checkbox => {
+                    checkbox.checked = this.checked;
+                });
+                updateResendButtonState();
+                updateSelectedEmployees();
+            });
+    
+            // Event listener for each row checkbox
+            rowCheckboxes.forEach(function(checkbox) {
+                checkbox.addEventListener('change', function() {
+                    updateResendButtonState();
+                    updateSelectedEmployees();
+                });
+            });
+    
+            // Initialize the resend button state and selected employees on page load
+            updateResendButtonState();
+            updateSelectedEmployees();
+    
+            // Add event listener to submit the form when the resend button is clicked
+            resendButton.addEventListener('click', function() {
+                form.submit();
+            });
+        });
+    </script>    
+{% endblock %}
+
+{# JavaScript for prepopulated fields #}
+{% prepopulated_fields_js %}
+
+</div>
+</form>
+
+<!-- This form will be managed/submitted by JS -->
+<form id="campaign_invitation_form" action="{% url 'admin:campaign_invitation_view' object_id %}" method="POST">
+    {% csrf_token %}
+    <input type="hidden" name="selected_employees" id="campaign_resend_invitation_input" />
+</form>
+
+</div>
+{% endblock %}

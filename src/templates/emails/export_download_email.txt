@@ -1,0 +1,4 @@
+{{ subject }}
+
+Your {{ export_object_name }} export is ready.
+Download the file here: {{ download_url }}

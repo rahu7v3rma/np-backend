@@ -1,0 +1,245 @@
+[
+  {
+    "model": "campaign.organization",
+    "pk": 1,
+    "fields": {
+      "name": "organization name 1",
+      "name_en": "organization name 1",
+      "name_he": null,
+      "manager_full_name": "organization manager full name 1",
+      "manager_phone_number": "organization manager phone number 1",
+      "manager_email": "organization manager email 1",
+      "logo_image": ""
+    }
+  },
+  {
+    "model": "campaign.employeegroup",
+    "pk": 1,
+    "fields": {
+      "name": "employee group name 1",
+      "organization_id": 1,
+      "auth_method": "AUTH_ID",
+      "delivery_location": "ToHome"
+    }
+  },
+  {
+    "model": "campaign.employeegroup",
+    "pk": 2,
+    "fields": {
+      "name": "employee group name 2",
+      "organization_id": 1,
+      "auth_method": "AUTH_ID",
+      "delivery_location": "ToHome"
+    }
+  },
+  {
+    "model": "campaign.employeegroup",
+    "pk": 3,
+    "fields": {
+      "name": "employee group name 3",
+      "organization_id": 1,
+      "auth_method": "AUTH_ID",
+      "delivery_location": "ToHome"
+    }
+  },
+  {
+    "model": "campaign.employee",
+    "pk": 1,
+    "fields": {
+      "employee_group": 1,
+      "first_name": "employee first name 1",
+      "first_name_en": "employee first name en 1",
+      "first_name_he": "employee first name he 1",
+      "last_name": "employee last name 1",
+      "last_name_en": "employee last name en 1",
+      "last_name_he": "employee last name he 1",
+      "auth_id": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJlbXBsb3llZV9pZCI6MX0.CczRk0nYqL36pXSroBA0L7uHhHAxG0P4sARzVmpbdaQ",
+      "email": null,
+      "phone_number": null,
+      "birthday_date": null,
+      "default_language": "HE",
+      "delivery_city": null,
+      "delivery_street": null,
+      "delivery_street_number": null,
+      "delivery_apartment_number": null,
+      "active": true,
+      "otp_secret": null
+    }
+  },
+  {
+    "model": "campaign.employee",
+    "pk": 2,
+    "fields": {
+      "employee_group": 2,
+      "first_name": "employee first name 2",
+      "first_name_en": "employee first name en 2",
+      "first_name_he": "employee first name he 2",
+      "last_name": "employee last name 2",
+      "last_name_en": "employee last name en 2",
+      "last_name_he": "employee last name he 2",
+      "auth_id": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJlbXBsb3llZV9pZCI6Mn0.I9WqXqNkVQfvxenm-_AdUNXPqwRbsH4J7qVsIemj26c",
+      "email": null,
+      "phone_number": null,
+      "birthday_date": null,
+      "default_language": "HE",
+      "delivery_city": null,
+      "delivery_street": null,
+      "delivery_street_number": null,
+      "delivery_apartment_number": null,
+      "active": true,
+      "otp_secret": null
+    }
+  },
+  {
+    "model": "campaign.campaign",
+    "pk": 1,
+    "fields": {
+      "organization_id": 1,
+      "name": "campaign name 1",
+      "name_en": "campaign name en 1",
+      "name_he": "campaign name he 1",
+      "start_date_time": "2024-05-15T13:26:27.847Z",
+      "end_date_time": "2030-05-22T14:54:50.924Z",
+      "code": "f6178ba338e98479",
+      "campaign_type": "EVENT",
+      "ship_to": "TO_OFFICE",
+      "status": "ACTIVE",
+      "login_page_title": "",
+      "login_page_subtitle": "",
+      "main_page_first_banner_title": "",
+      "main_page_first_banner_subtitle": "",
+      "main_page_first_banner_image": "",
+      "main_page_first_banner_mobile_image": "",
+      "main_page_second_banner_title": "",
+      "main_page_second_banner_subtitle": "",
+      "main_page_second_banner_background_color": "",
+      "main_page_second_banner_text_color": "",
+      "sms_sender_name": "",
+      "sms_welcome_text": "",
+      "email_welcome_text": ""
+    }
+  },
+  {
+    "model": "campaign.campaign",
+    "pk": 2,
+    "fields": {
+      "organization_id": 1,
+      "name": "campaign name 2",
+      "name_en": "campaign name en 2",
+      "name_he": "campaign name he 2",
+      "start_date_time": "2024-05-15T13:26:27.847Z",
+      "end_date_time": "2030-05-22T14:54:50.924Z",
+      "code": "f39ae305381c8d3a",
+      "campaign_type": "EVENT",
+      "ship_to": "TO_OFFICE",
+      "status": "ACTIVE",
+      "login_page_title": "",
+      "login_page_subtitle": "",
+      "main_page_first_banner_title": "",
+      "main_page_first_banner_subtitle": "",
+      "main_page_first_banner_image": "",
+      "main_page_first_banner_mobile_image": "",
+      "main_page_second_banner_title": "",
+      "main_page_second_banner_subtitle": "",
+      "main_page_second_banner_background_color": "",
+      "main_page_second_banner_text_color": "",
+      "sms_sender_name": "",
+      "sms_welcome_text": "",
+      "email_welcome_text": ""
+    }
+  },
+  {
+    "model": "campaign.campaignemployee",
+    "pk": 1,
+    "fields": {
+      "campaign": 1,
+      "employee": 1,
+      "first_login": null,
+      "last_login": null
+    }
+  },
+  {
+    "model": "campaign.campaignemployee",
+    "pk": 2,
+    "fields": {
+      "campaign": 1,
+      "employee": 2,
+      "first_login": null,
+      "last_login": null
+    }
+  },
+  {
+    "model": "campaign.employeegroupcampaign",
+    "pk": 1,
+    "fields": {
+      "campaign": 1,
+      "employee_group": 1,
+      "budget_per_employee": 1
+    }
+  },
+  {
+    "model": "campaign.employeegroupcampaign",
+    "pk": 2,
+    "fields": {
+      "campaign": 1,
+      "employee_group": 2,
+      "budget_per_employee": 2
+    }
+  },
+  {
+    "model": "campaign.employeegroupcampaign",
+    "pk": 3,
+    "fields": {
+      "campaign": 2,
+      "employee_group": 3,
+      "budget_per_employee": 3
+    }
+  },
+  {
+    "model": "campaign.employeegroupcampaignproduct",
+    "pk": 1,
+    "fields": { "employee_group_campaign_id": 1, "product_id": 1 }
+  },
+  {
+    "model": "campaign.employeegroupcampaignproduct",
+    "pk": 2,
+    "fields": { "employee_group_campaign_id": 2, "product_id": 2 }
+  },
+  {
+    "model": "campaign.employeegroupcampaignproduct",
+    "pk": 3,
+    "fields": { "employee_group_campaign_id": 3, "product_id": 3 }
+  },
+  {
+    "model": "campaign.cart",
+    "pk": 1,
+    "fields": {
+      "campaign_employee_id": 1
+    }
+  },
+  {
+    "model": "campaign.cartproduct",
+    "pk": 1,
+    "fields": {
+      "cart_id": 1,
+      "product_id": 1,
+      "quantity": 1
+    }
+  },
+  {
+    "model": "campaign.cartproduct",
+    "pk": 2,
+    "fields": {
+      "cart_id": 1,
+      "product_id": 2,
+      "quantity": 0
+    }
+  },
+  {
+    "model": "campaign.cart",
+    "pk": 2,
+    "fields": {
+      "campaign_employee_id": 2
+    }
+  }
+]
