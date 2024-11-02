@@ -1,5 +1,4 @@
-[
-    {
+[{
         "model": "inventory.supplier",
         "pk": 1,
         "fields": {
@@ -15,8 +14,10 @@
             "address_street_number": null,
             "address_street_number_en": null,
             "address_street_number_he": null,
-            "email": null,
-            "phone_number": null
+            "email": "supplier1@example.com",
+            "phone_number": null,
+            "updated_at": "2024-09-05T02:26:21",
+            "created_at": "2023-08-25T14:42:34"
         }
     },
     {
@@ -26,7 +27,9 @@
             "name": "brand1",
             "name_en": "brand1",
             "name_he": "brand1 he",
-            "logo_image": ""
+            "logo_image": "",
+            "updated_at": "2024-09-05T02:26:21",
+            "created_at": "2023-08-25T14:42:34"
         }
     },
     {

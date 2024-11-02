@@ -1,5 +1,6 @@
 from functools import update_wrapper
 from io import BytesIO
+import json
 import logging
 from typing import Any
 
@@ -27,16 +28,27 @@ from openpyxl.formatting.rule import CellIsRule
 from openpyxl.styles import PatternFill
 
 from inventory.models import Product
-from lib.admin import ImportableExportableAdmin
+from lib.admin import ImportableExportableAdmin, custom_titled_filter
 
-from .admin_actions import CampaignActionsMixin, OrderActionsMixin
-from .admin_forms import EmployeeForm, ImportPricelistForm, OrderProductInlineFormset
+from .admin_actions import (
+    CampaignActionsMixin,
+    OrderActionsMixin,
+    QuickOfferActionsMixin,
+)
+from .admin_forms import (
+    EmployeeForm,
+    EmployeeGroupForm,
+    ImportEmployeeGroupForm,
+    ImportPricelistForm,
+    OrderForm,
+    OrderProductInlineFormset,
+)
 from .admin_views import (
     CampaignCreationWizard,
     CampaignImpersonateView,
     CampaignInvitationView,
+    QuickOfferCreationWizard,
 )
-from .forms import EmployeeGroupForm
 from .models import (
     Campaign,
     CampaignEmployee,
@@ -47,6 +59,8 @@ from .models import (
     OrderProduct,
     Organization,
     OrganizationProduct,
+    QuickOffer,
+    QuickOfferTag,
 )
 from .utils import format_with_none_replacement
 
@@ -80,6 +94,8 @@ class OrganizationAdmin(ImportableExportableAdmin):
     ]
     readonly_fields = ('organization_products_link',)
 
+    actions = ['export_as_xlsx']
+    change_list_template = 'admin/import_changelist.html'
     list_display = (
         'name',
         'manager_full_name',
@@ -297,13 +313,13 @@ class OrganizationAdmin(ImportableExportableAdmin):
                 ),
                 bottom_margin=Round(
                     ExpressionWrapper(
-                        F('cost_price') * Value(1.1), output_field=FloatField()
+                        F('cost_price') * Value(0.25), output_field=FloatField()
                     ),
                     2,
                 ),
                 top_margin=Round(
                     ExpressionWrapper(
-                        F('cost_price') * Value(1.2), output_field=FloatField()
+                        F('cost_price') * Value(0.60), output_field=FloatField()
                     ),
                     2,
                 ),
@@ -455,6 +471,15 @@ class OrganizationAdmin(ImportableExportableAdmin):
 
     organization_products_link.short_description = 'Organization products'
 
+    search_fields = ('name',)
+
+    def changelist_view(self, request, extra_context=None):
+        extra_context = extra_context or {}
+        extra_context['organization_names'] = json.dumps(
+            list(Organization.objects.all().values_list('name', flat=True))
+        )
+        return super(OrganizationAdmin, self).changelist_view(request, extra_context)
+
 
 @admin.register(Employee)
 class EmployeeAdmin(ImportableExportableAdmin):
@@ -463,12 +488,21 @@ class EmployeeAdmin(ImportableExportableAdmin):
         'last_name',
         'employee_group',
         'organization',
+        'email',
+        'phone_number',
+        'auth_id',
     )
     list_filter = ('employee_group__organization',)
     actions = ['export_as_xlsx']
     form = EmployeeForm
     change_form_template = 'admin/employee_form.html'
+    change_list_template = 'campaign/employee_change_list.html'
     exclude = ('otp_secret',)
+    search_fields = (
+        'first_name',
+        'last_name',
+        'employee_group__name',
+    )
 
     export_fields = (
         'employee_group__name',
@@ -512,18 +546,187 @@ class EmployeeAdmin(ImportableExportableAdmin):
 
         return super().import_parse_field(name, value, extra_params, extra_files)
 
+    def save_model(self, request, obj, form, change):
+        data = form.cleaned_data
+        msgs = []
+        if not data.get('organization'):
+            msgs.append('Organization is required')
+        if msgs:
+            request.session['validation_error'] = True
+            for msg in msgs:
+                self.message_user(request, msg, level=messages.ERROR)
+            return
+        return super().save_model(request, obj, form, change)
+
+    def response_change(self, request, obj):
+        validation_error = request.session.get('validation_error')
+        if validation_error:
+            del request.session['validation_error']
+            return redirect(request.path)
+        return super().response_change(request, obj)
+
+    def response_add(self, request, obj, post_url_continue=None):
+        validation_error = request.session.get('validation_error')
+        if validation_error:
+            del request.session['validation_error']
+            return redirect(request.path)
+        return super().response_change(request, obj)
+
+    def changelist_view(self, request, extra_context=None):
+        extra_context = extra_context or {}
+        extra_context['employees'] = json.dumps(list())
+        return super().changelist_view(request, extra_context)
+
+    def get_search_results(self, request, queryset, search_term):
+        queryset, use_distinct = super().get_search_results(
+            request, queryset, search_term
+        )
+        if search_term:
+            queryset = Employee.objects.filter(
+                Q(first_name__icontains=search_term)
+                | Q(last_name__icontains=search_term)
+                | Q(employee_group__name__icontains=search_term)
+                | Q(employee_group__campaigns__name__icontains=search_term)
+                | Q(employee_group__organization__name__icontains=search_term)
+            )
+            use_distinct = True
+        return queryset, use_distinct
+
 
 class EmployeeInline(admin.TabularInline):
     model = Employee
     extra = 1
-    exclude = ('otp_secret',)
+    exclude = ('otp_secret', 'first_name', 'last_name')
 
 
 @admin.register(EmployeeGroup)
 class EmployeeGroupAdmin(admin.ModelAdmin):
     form = EmployeeGroupForm
+    change_list_template = 'campaign/employee_group_change_list.html'
     list_display = ('name', 'campaign_names', 'organization', 'total_employees')
     inlines = [EmployeeInline]
+    fields = (
+        'name',
+        'organization',
+        'delivery_city',
+        'delivery_street',
+        'delivery_street_number',
+        'delivery_apartment_number',
+        'delivery_location',
+        'auth_method',
+    )
+
+    def get_readonly_fields(self, request, obj=None):
+        if obj:
+            return self.readonly_fields + ('organization',)
+        return self.readonly_fields
+
+    actions = ['export_as_xlsx']
+    export_fields = {
+        'Name': 'name',
+        'Organization': 'organization__name',
+        'Delivery City': 'delivery_city',
+        'Delivery Street': 'delivery_street',
+        'Delivery Street Number': 'delivery_street_number',
+        'Delivery Apartment Number': 'delivery_apartment_number',
+        'Delivery Location': 'delivery_location',
+        'Auth Method': 'auth_method',
+    }
+
+    def export_as_xlsx(self, request, queryset):
+        data = list(queryset.values_list(*self.export_fields.values()))
+
+        response = HttpResponse(
+            content_type='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
+        )
+        response['Content-Disposition'] = 'attachment; filename=e=Employee-Groups.xlsx'
+
+        workbook = Workbook()
+        worksheet = workbook.active
+        worksheet.append(list(self.export_fields.keys()))
+
+        for _employee_group in data:
+            worksheet.append(_employee_group)
+
+        workbook.save(response)
+        return response
+
+    export_as_xlsx.short_description = 'Export selected Employee Group as XLSX'
+
+    def get_urls(self):
+        urls = super().get_urls()
+        custom_urls = [
+            path(
+                'import-employee-group-xlsx/',
+                self.admin_site.admin_view(self.import_xlsx_view),
+                name='import_xlsx_view',
+            ),
+        ]
+        return custom_urls + urls
+
+    def import_xlsx_view(self, request):
+        import_form = ImportEmployeeGroupForm(request.POST, request.FILES)
+
+        if import_form.is_valid():
+            try:
+                employee_group_file = import_form.clean().get('employee_group_file')
+                workbook = load_workbook(employee_group_file)
+                sheet = workbook.active
+                headers = None
+                counter = 0
+                for row in sheet.iter_rows(
+                    max_col=len(self.export_fields), values_only=True
+                ):
+                    if not headers:
+                        headers = row
+                        continue
+
+                    (
+                        name,
+                        organization__name,
+                        delivery_city,
+                        delivery_street,
+                        delivery_street_number,
+                        delivery_apartment_number,
+                        delivery_location,
+                        auth_method,
+                    ) = row
+
+                    organization = Organization.objects.filter(
+                        name=organization__name
+                    ).first()
+
+                    EmployeeGroup(
+                        name=name,
+                        organization=organization,
+                        delivery_city=delivery_city,
+                        delivery_street=delivery_street,
+                        delivery_street_number=delivery_street_number,
+                        delivery_apartment_number=delivery_apartment_number,
+                        delivery_location=delivery_location,
+                        auth_method=auth_method,
+                    ).save()
+                    counter = counter + 1
+
+                self.message_user(
+                    request,
+                    f'successfully imported employee groups ({counter})',
+                    level=messages.INFO,
+                )
+                return HttpResponse(status=200)
+            except Exception as ex:
+                print(ex)
+                logger.error(
+                    f'An unknown error has occurred while importing prices: {ex}'
+                )
+                message = (
+                    'An unknown error has occurred while importing employee groups'
+                )
+                self.message_user(request, message, level=messages.ERROR)
+                return HttpResponse(status=400)
+
+    class Media:
+        js = ('js/admin.js',)
 
 
 @admin.register(Campaign)
@@ -636,7 +839,12 @@ class CampaignAdmin(admin.ModelAdmin, CampaignActionsMixin):
                 .annotate(
                     pending_order=FilteredRelation(
                         'order',
-                        condition=Q(order__status=Order.OrderStatusEnum.PENDING.name),
+                        condition=Q(
+                            order__status__in=[
+                                Order.OrderStatusEnum.PENDING.name,
+                                Order.OrderStatusEnum.SENT_TO_LOGISTIC_CENTER.name,
+                            ]
+                        ),
                     ),
                 )
                 .values(
@@ -707,8 +915,41 @@ class OrderProductInline(admin.TabularInline):
     extra = 0
 
 
+class CampaignFilter(admin.SimpleListFilter):
+    title = 'Campaign'
+    parameter_name = 'campaign'
+
+    def lookups(self, request, model_admin):
+        return [(nm, nm) for nm in Campaign.objects.values_list('name', flat=True)]
+
+    def queryset(self, request, queryset):
+        if self.value():
+            return queryset.filter(
+                campaign_employee_id__campaign__name__in=self.value().split(',')
+            )
+        return queryset
+
+
+class OrganizationFilter(admin.SimpleListFilter):
+    title = 'Organization'
+    parameter_name = 'organization'
+
+    def lookups(self, request, model_admin):
+        return [(nm, nm) for nm in Organization.objects.values_list('name', flat=True)]
+
+    def queryset(self, request, queryset):
+        if self.value():
+            return queryset.filter(
+                campaign_employee_id__campaign__organization__name__in=self.value().split(
+                    ','
+                )
+            )
+        return queryset
+
+
 @admin.register(Order)
 class OrderAdmin(admin.ModelAdmin, OrderActionsMixin):
+    change_list_template = 'campaign/order_change_list.html'
     list_display = (
         'order_id',
         'reference',
@@ -725,16 +966,26 @@ class OrderAdmin(admin.ModelAdmin, OrderActionsMixin):
         'user_address',
         'dc_status',
     )
-
     list_filter = (
-        'campaign_employee_id__campaign',
-        'campaign_employee_id__campaign__organization',
+        CampaignFilter,
+        OrganizationFilter,
         'status',
         'order_date_time',
         'orderproduct__product_id__product_id__product_type',
         'orderproduct__product_id__product_id__product_kind',
+        (
+            'campaign_employee_id__campaign__status',
+            custom_titled_filter('campaign status'),
+        ),
+        (
+            'campaign_employee_id__employee__employee_group__delivery_location',
+            custom_titled_filter('delivery type'),
+        ),
+        (
+            'orderproduct__product_id__product_id__supplier__name',
+            custom_titled_filter('supplier'),
+        ),
     )
-
     search_fields = (
         'reference',
         'order_id',
@@ -742,31 +993,50 @@ class OrderAdmin(admin.ModelAdmin, OrderActionsMixin):
         'orderproduct__product_id__product_id__name_he',
     )
 
-    inlines = [OrderProductInline]
+    fieldsets = [
+        (
+            None,
+            {
+                'fields': (
+                    'campaign_employee_id',
+                    'order_date_time',
+                    'cost_from_budget',
+                    'cost_added',
+                    'status',
+                    'full_name',
+                    'phone_number',
+                    'additional_phone_number',
+                    'delivery_city',
+                    'delivery_street',
+                    'delivery_street_number',
+                    'delivery_apartment_number',
+                    'delivery_additional_details',
+                    'impersonated_by',
+                    'logistics_center_status',
+                    'country',
+                    'state_code',
+                    'zip_code',
+                    'size',
+                    'color',
+                ),
+            },
+        ),
+    ]
+
+    form = OrderForm
+
+    def get_readonly_fields(self, request, obj=None):
+        # don't allow changing the campaign employee id for saved orders
+        return ['campaign_employee_id'] if obj else []
+
+    def get_inlines(self, request, obj):
+        # only allow changing ordered products for saved orders
+        return [OrderProductInline] if obj else []
 
     actions = [
         'export_as_xlsx',
         'send_orders',
     ]
-
-    def get_queryset(self, request):
-        queryset = super().get_queryset(request)
-        return queryset.select_related('campaign_employee_id__employee__employee_group')
-
-    def get_form(self, request, obj=None, **kwargs):
-        form = super().get_form(request, obj, **kwargs)
-
-        if obj and obj.pk is not None:
-            # for existing orders filter campaign employee choices to only ones
-            # that are related to the same campaign, otherwise there will be
-            # thousands of options here and the page won't even load
-            form.base_fields[
-                'campaign_employee_id'
-            ].queryset = CampaignEmployee.objects.filter(
-                campaign=obj.campaign_employee_id.campaign
-            )
-
-        return form
 
     def user_address(self, obj):
         return format_with_none_replacement(
@@ -804,3 +1074,72 @@ class OrganizationProductAdmin(admin.ModelAdmin):
     )
     list_filter = ('organization',)
     list_display_links = ('price',)
+
+
+@admin.register(QuickOffer)
+class QuickOfferAdmin(admin.ModelAdmin, QuickOfferActionsMixin):
+    list_display = [
+        'quick_offer',
+        'duplicate_link',
+        'nicklas_status',
+        'client_status',
+        'last_login',
+        'list_tags',
+        'manager_site_link',
+    ]
+    actions = [
+        'finish_selected_quick_offers',
+        'export_selected_quick_offers_as_xlsx',
+    ]
+    list_filter = (
+        'organization',
+        'nicklas_status',
+        'client_status',
+        'tags',
+        'last_login',
+    )
+
+    def quick_offer(self, obj):
+        return mark_safe(
+            '<a href="%s?quick_offer_id=%s" target="_blank">%s</a>'
+            % (reverse('admin:campaign_quickoffer_add'), obj.id, obj.name)
+        )
+
+    def manager_site_link(self, obj: QuickOffer):
+        return format_html(
+            '<a href="#" onclick="copyToClipboard(\'{0}\');'
+            'return false;">Copy link</a>'
+            '<input type="hidden" class="copy-link-input" value="{0}">',
+            obj.manager_site_link,
+        )
+
+    def duplicate_link(self, obj):
+        return mark_safe(
+            '<a href="%s?quick_offer_id=%s&duplicate=1" target="_blank">duplicate</a>'
+            % (reverse('admin:campaign_quickoffer_add'), obj.id)
+        )
+
+    def list_tags(self, obj):
+        return ', '.join([tag.name for tag in obj.tags.all()])
+
+    list_tags.short_description = 'Tags'
+
+    def get_urls(self):
+        app_label = self.opts.app_label
+        model_name = self.opts.model_name
+        return [
+            path(
+                'add/',
+                self.admin_site.admin_view(QuickOfferCreationWizard.as_view()),
+                name=f'{app_label}_{model_name}_add',
+            )
+        ] + super().get_urls()
+
+    class Media:
+        js = ('js/admin.js',)
+
+
+@admin.register(QuickOfferTag)
+class QuickOfferTagAdmin(admin.ModelAdmin):
+    def has_module_permission(self, request):
+        return False

@@ -1,12 +1,19 @@
 from datetime import datetime
 import logging
+import time
+from typing import Generator
 
 from django.conf import settings
+import paramiko
 import requests
 
-from campaign.models import DeliveryLocationEnum, EmployeeGroupCampaign, Order
+from campaign.models import (
+    DeliveryLocationEnum,
+    EmployeeGroupCampaign,
+    Order,
+    OrderProduct,
+)
 from inventory.models import Product, Supplier
-from services.address import format_street_line
 
 from ..models import (
     LogisticsCenterInboundReceipt,
@@ -30,52 +37,52 @@ def _add_or_update_company(
     address_city: str,
     phone_number: str,
 ) -> bool:
+    request_body = {
+        'DATACOLLECTION': {
+            'DATA': {
+                'CONSIGNEE': settings.ORIAN_CONSIGNEE,
+                'COMPANYTYPE': 'VENDOR'
+                if is_vendor
+                else 'CUSTOMER',  # suppliers vendors, customers are customers
+                'COMPANY': _platform_id_to_orian_id(company_id),
+                'COMPANYNAME': name,
+                # 'COMPANYGROUP': '',
+                # 'OTHERCOMPANY': '',
+                # 'STATUS': 1,
+                # 'DELIVERYCOMMENTS': '',
+                # 'DEFAULTCONTACT': '123',
+                'CONTACTS': {
+                    'CONTACT': [
+                        {
+                            # 'CONTACTID': 1234,
+                            'STREET1': f'{address_street} {address_street_number}',
+                            # 'STREET2': '',
+                            'CITY': address_city,
+                            # 'STATE': '',
+                            # 'ZIP': '',
+                            'CONTACT1NAME': name,
+                            # 'CONTACT2NAME': '',
+                            'CONTACT1PHONE': phone_number,
+                            # 'CONTACT2PHONE': '',
+                            # 'CONTACT1FAX': '',
+                            # 'CONTACT2FAX': '',
+                            # 'CONTACT1EMAIL': '',
+                            # 'CONTACT2EMAIL': '',
+                            # 'POINTID': '',
+                            # 'ROUTE': '',
+                            # 'STAGINGLANE': ''
+                        }
+                    ]
+                },
+            }
+        }
+    }
+
     response = requests.post(
         f'{settings.ORIAN_BASE_URL}/Company',
         # note that "bearer" must be all lower case
         headers={'Authorization': f'bearer {settings.ORIAN_API_TOKEN}'},
-        json={
-            'DATACOLLECTION': {
-                'DATA': {
-                    'CONSIGNEE': settings.ORIAN_CONSIGNEE,
-                    'COMPANYTYPE': 'VENDOR'
-                    if is_vendor
-                    else 'CUSTOMER',  # suppliers vendors, customers are customers
-                    'COMPANY': _platform_id_to_orian_id(company_id),
-                    'COMPANYNAME': name,
-                    # 'COMPANYGROUP': '',
-                    # 'OTHERCOMPANY': '',
-                    # 'STATUS': 1,
-                    # 'DELIVERYCOMMENTS': '',
-                    # 'DEFAULTCONTACT': '123',
-                    'CONTACTS': {
-                        'CONTACT': [
-                            {
-                                # 'CONTACTID': 1234,
-                                'STREET1': format_street_line(
-                                    address_street, address_street_number, None
-                                ),
-                                # 'STREET2': '',
-                                'CITY': address_city,
-                                # 'STATE': '',
-                                # 'ZIP': '',
-                                'CONTACT1NAME': name,
-                                # 'CONTACT2NAME': '',
-                                'CONTACT1PHONE': phone_number,
-                                # 'CONTACT2PHONE': '',
-                                # 'CONTACT1FAX': '',
-                                # 'CONTACT2FAX': '',
-                                # 'CONTACT1EMAIL': '',
-                                # 'CONTACT2EMAIL': '',
-                                # 'POINTID': '',
-                                # 'ROUTE': '',
-                                # 'STAGINGLANE': ''
-                            }
-                        ]
-                    },
-                }
-            }
-        },
+        json=request_body,
     )
 
     # note the success typo on responses from orian api
@@ -87,6 +94,7 @@ def _add_or_update_company(
             'failed to add or update company with status '
             f'{response.status_code} and response {response.text}'
         )
+        logger.error(f'request body was: {request_body}')
         return False
 
     logger.info(f'company added or updated with: {response.text}')
@@ -111,7 +119,7 @@ def add_or_update_dummy_customer() -> bool:
     # we create a dummy nicklas customer company and then add the address for
     # each outbound separately as per orian's instructions
     result = _add_or_update_company(
-        -999,
+        settings.ORIAN_DUMMY_CUSTOMER_PLATFORM_ID,
         'Nicklas',
         False,
         settings.ORIAN_DUMMY_CUSTOMER_COMPANY_STREET,
@@ -124,6 +132,9 @@ def add_or_update_dummy_customer() -> bool:
 
 
 def add_or_update_product(product: Product) -> bool:
+    product_name = product.name_he if product.name_he else product.name
+    product_name = product_name.replace('"', '').replace("'", '').replace('`', '')
+
     response = requests.post(
         f'{settings.ORIAN_BASE_URL}/Sku',
         # note that "bearer" must be all lower case
@@ -134,9 +145,9 @@ def add_or_update_product(product: Product) -> bool:
                     'CONSIGNEE': settings.ORIAN_CONSIGNEE,
                     'SKU': product.sku,
                     'DEFAULTUOM': 'EACH',
-                    'SKUDESCRIPTION': product.name,
+                    'SKUDESCRIPTION': product_name[:255],
                     # 'PICKSORTORDER': '',
-                    # 'SKUSHORTDESC': '',
+                    'SKUSHORTDESC': product_name[:150],
                     'MANUFACTURERSKU': product.reference,
                     'VENDORSKU': '',
                     'OTHERSKU': '',
@@ -240,7 +251,9 @@ def add_or_update_inbound(
     return True
 
 
-def add_or_update_outbound(order: Order, outbound_date_time: datetime) -> bool:
+def add_or_update_outbound(
+    order: Order, order_products: list[OrderProduct], outbound_date_time: datetime
+) -> bool:
     # if the ordering employee's group is set to receive gifts at the office we
     # should use the office address and the office manager details for the
     # outbound delivery. otherwise use the address and checkout details the
@@ -253,14 +266,14 @@ def add_or_update_outbound(order: Order, outbound_date_time: datetime) -> bool:
         outbound_delivery_apartment_number = employee_group.delivery_apartment_number
         outbound_delivery_city = employee_group.delivery_city
         outbound_delivery_additional_details = ''
-        outbound_contact_1_name = employee_group.organization.manager_full_name
-        outbound_contact_2_name = employee.full_name
-        outbound_contact_1_phone_number = (
+        outbound_contact_1_name = employee.full_name
+        outbound_contact_2_name = employee_group.organization.manager_full_name
+        outbound_contact_1_phone_number = employee.phone_number
+        outbound_contact_2_phone_number = (
             employee_group.organization.manager_phone_number
         )
-        outbound_contact_2_phone_number = employee.phone_number
-        outbound_contact_1_email = employee_group.organization.manager_email
-        outbound_contact_2_email = employee.email
+        outbound_contact_1_email = employee.email
+        outbound_contact_2_email = employee_group.organization.manager_email
 
         # reference order field should group b2b orders (aka ones made to
         # offices)
@@ -268,6 +281,9 @@ def add_or_update_outbound(order: Order, outbound_date_time: datetime) -> bool:
             employee_group=employee_group, campaign=order.campaign_employee_id.campaign
         )
         reference_order = _platform_id_to_orian_id(campaign_employee_group.pk)
+
+        # for b2b orders nicklas will deliver
+        route = 'CUSTOMER'
     else:
         outbound_delivery_street = order.delivery_street
         outbound_delivery_street_number = order.delivery_street_number
@@ -283,83 +299,89 @@ def add_or_update_outbound(order: Order, outbound_date_time: datetime) -> bool:
 
         reference_order = ''
 
+        # for normal orders orian should deliver
+        route = 'ORIAN'
+
+    request_body = {
+        'DATACOLLECTION': {
+            'DATA': {
+                'CONSIGNEE': settings.ORIAN_CONSIGNEE,
+                'ORDERID': order.order_id,
+                # our orders are always shipped to customers
+                'ORDERTYPE': 'CUSTOMER',
+                # reference order field should either have a value to group
+                # b2b orders shipping to the same location together or no
+                # value at all for orders shipping to employees' homes
+                'REFERENCEORD': reference_order,
+                'TARGETCOMPANY': _platform_id_to_orian_id(
+                    settings.ORIAN_DUMMY_CUSTOMER_PLATFORM_ID
+                ),  # our dummy customer company
+                # outgoing is only sent to customer companies
+                'COMPANYTYPE': 'CUSTOMER',
+                'REQUESTEDDATE': outbound_date_time.strftime('%d-%m-%Y'),
+                # 'SCHEDULEDDATE': '',
+                'CREATEDATE': outbound_date_time.strftime('%d-%m-%Y'),
+                'ROUTE': route,
+                'NOTES': '',
+                'SHIPPINGDETAIL': {
+                    # 'CHECK1DATE': '',
+                    # 'CHECK1AMOUNT': '',
+                    # 'CHECK2DATE': '',
+                    # 'CHECK2AMOUNT': '',
+                    # 'CHECK3DATE': '',
+                    # 'CHECK3AMOUNT': '',
+                    # 'CASH': '',
+                    # 'COLLECT': '',
+                    # 'FRIDAY': '',
+                    'DELIVERYCOMMENTS': outbound_delivery_additional_details,
+                    # 'DELIVERYCONFIRMATION': '',
+                    # 'FROMSCHEDUALEDELIVERYDATE': '',
+                    # 'TOSCHEDUALEDELIVERYDATE': '',
+                },
+                'CONTACT': {
+                    'STREET1': (
+                        f'{outbound_delivery_street} '
+                        f'{outbound_delivery_street_number}'
+                    ),
+                    'STREET2': f'דירה {outbound_delivery_apartment_number}'
+                    if outbound_delivery_apartment_number
+                    else '',
+                    'CITY': outbound_delivery_city,
+                    # 'STATE': '',
+                    # 'ZIP': '',
+                    'CONTACT1NAME': outbound_contact_1_name,
+                    'CONTACT2NAME': outbound_contact_2_name,
+                    'CONTACT1PHONE': outbound_contact_1_phone_number,
+                    'CONTACT2PHONE': outbound_contact_2_phone_number,
+                    # 'CONTACT1FAX': '',
+                    # 'CONTACT2FAX': '',
+                    'CONTACT1EMAIL': outbound_contact_1_email,
+                    'CONTACT2EMAIL': outbound_contact_2_email,
+                },
+                'LINES': {
+                    'LINE': [
+                        {
+                            'ORDERLINE': i,
+                            'REFERENCEORDLINE': i,
+                            'SKU': p['sku'],
+                            'QTYORIGINAL': p['quantity'],
+                            # 'NOTES': '',
+                            # 'BATCH': '',
+                            # 'SERIAL': '',
+                            'INVENTORYSTATUS': 'AVAILABLE',  # always AVAILABLE
+                        }
+                        for i, p in enumerate(order_products)
+                    ]
+                },
+            }
+        }
+    }
+
     response = requests.post(
         f'{settings.ORIAN_BASE_URL}/Outbound',
         # note that "bearer" must be all lower case
         headers={'Authorization': f'bearer {settings.ORIAN_API_TOKEN}'},
-        json={
-            'DATACOLLECTION': {
-                'DATA': {
-                    'CONSIGNEE': settings.ORIAN_CONSIGNEE,
-                    'ORDERID': order.order_id,
-                    # our orders are always shipped to customers
-                    'ORDERTYPE': 'CUSTOMER',
-                    # reference order field should either have a value to group
-                    # b2b orders shipping to the same location together or no
-                    # value at all for orders shipping to employees' homes
-                    'REFERENCEORD': reference_order,
-                    'TARGETCOMPANY': _platform_id_to_orian_id(
-                        -999
-                    ),  # our dummy customer company
-                    # outgoing is only sent to customer companies
-                    'COMPANYTYPE': 'CUSTOMER',
-                    'REQUESTEDDATE': outbound_date_time.strftime('%d-%m-%Y'),
-                    # 'SCHEDULEDDATE': '',
-                    'CREATEDATE': outbound_date_time.strftime('%d-%m-%Y'),
-                    'ROUTE': 'ORIAN',  # we only distribute via orian
-                    'NOTES': '',
-                    'SHIPPINGDETAIL': {
-                        # 'CHECK1DATE': '',
-                        # 'CHECK1AMOUNT': '',
-                        # 'CHECK2DATE': '',
-                        # 'CHECK2AMOUNT': '',
-                        # 'CHECK3DATE': '',
-                        # 'CHECK3AMOUNT': '',
-                        # 'CASH': '',
-                        # 'COLLECT': '',
-                        # 'FRIDAY': '',
-                        'DELIVERYCOMMENTS': outbound_delivery_additional_details,
-                        # 'DELIVERYCONFIRMATION': '',
-                        # 'FROMSCHEDUALEDELIVERYDATE': '',
-                        # 'TOSCHEDUALEDELIVERYDATE': '',
-                    },
-                    'CONTACT': {
-                        'STREET1': format_street_line(
-                            outbound_delivery_street,
-                            outbound_delivery_street_number,
-                            outbound_delivery_apartment_number,
-                        ),
-                        # 'STREET2': '',
-                        'CITY': outbound_delivery_city,
-                        # 'STATE': '',
-                        # 'ZIP': '',
-                        'CONTACT1NAME': outbound_contact_1_name,
-                        'CONTACT2NAME': outbound_contact_2_name,
-                        'CONTACT1PHONE': outbound_contact_1_phone_number,
-                        'CONTACT2PHONE': outbound_contact_2_phone_number,
-                        # 'CONTACT1FAX': '',
-                        # 'CONTACT2FAX': '',
-                        'CONTACT1EMAIL': outbound_contact_1_email,
-                        'CONTACT2EMAIL': outbound_contact_2_email,
-                    },
-                    'LINES': {
-                        'LINE': [
-                            {
-                                'ORDERLINE': i,
-                                'REFERENCEORDLINE': i,
-                                'SKU': p.product_id.product_id.sku,
-                                'QTYORIGINAL': p.quantity,
-                                # 'NOTES': '',
-                                # 'BATCH': '',
-                                # 'SERIAL': '',
-                                'INVENTORYSTATUS': 'AVAILABLE',  # always AVAILABLE
-                            }
-                            for i, p in enumerate(order.orderproduct_set.all())
-                        ]
-                    },
-                }
-            }
-        },
+        json=request_body,
     )
 
     # note the success typo on responses from orian api
@@ -371,6 +393,7 @@ def add_or_update_outbound(order: Order, outbound_date_time: datetime) -> bool:
             'failed to add or update outbound with status '
             f'{response.status_code} and response {response.text}'
         )
+        logger.error(f'request body was: {request_body}')
         return False
 
     logger.info(f'outbound added or updated with: {response.text}')
@@ -532,3 +555,49 @@ def handle_logistics_center_ship_order_message(
         f'Successfully processed logistics center ship order message '
         f'with {"created" if created else "updated"} status!'
     )
+
+
+def fetch_logistics_center_snapshots() -> (
+    Generator[tuple[str, datetime, bytes], None, None]
+):
+    """
+    This generator connects to Orian's SFTP server, downloads snapshots and
+    yields the relevant ones
+    """
+    transport = paramiko.Transport((settings.ORIAN_SFTP_HOST, settings.ORIAN_SFTP_PORT))
+
+    try:
+        transport.connect(
+            None,
+            settings.ORIAN_SFTP_USER,
+            settings.ORIAN_SFTP_PASSWORD,
+        )
+        sftp = paramiko.SFTPClient.from_transport(transport)
+
+        snapshot_files = sftp.listdir(settings.ORIAN_SFTP_SNAPSHOTS_DIR)
+
+        for snapshot_file in snapshot_files:
+            snapshot_path = f'{settings.ORIAN_SFTP_SNAPSHOTS_DIR}/{snapshot_file}'
+
+            snapshot_modified_time_epoch_seconds = sftp.stat(snapshot_path).st_mtime
+            max_snapshot_file_age_seconds = 60 * 60 * 24 * 7  # 1 week
+
+            # make sure snapshot is not too old
+            if (
+                int(time.time()) - snapshot_modified_time_epoch_seconds
+                < max_snapshot_file_age_seconds
+            ):
+                with sftp.open(snapshot_path, 'r') as f:
+                    snapshot_data = f.read()
+
+                # parse snapshot's date-time from its file name
+                snapshot_date_time = datetime.strptime(
+                    snapshot_file.split('_')[2], '%d%m%Y%H%M'
+                )
+
+                yield (snapshot_file, snapshot_date_time, snapshot_data)
+    finally:
+        try:
+            transport.close()
+        except Exception as _:
+            pass

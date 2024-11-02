@@ -3,7 +3,6 @@ from enum import Enum
 from django.db import models
 
 from campaign.models import Order, OrderProduct
-from inventory.models import Product, Supplier
 
 
 class PurchaseOrder(models.Model):
@@ -13,7 +12,7 @@ class PurchaseOrder(models.Model):
         APPROVED = 'Approved'
         CANCELLED = 'Cancelled'
 
-    supplier = models.ForeignKey(Supplier, on_delete=models.CASCADE)
+    supplier = models.ForeignKey('inventory.Supplier', on_delete=models.CASCADE)
     notes = models.TextField(null=True, blank=True)
     status = models.CharField(
         max_length=100,
@@ -37,7 +36,7 @@ class PurchaseOrder(models.Model):
 
 
 class PurchaseOrderProduct(models.Model):
-    product_id = models.ForeignKey(Product, on_delete=models.CASCADE)
+    product_id = models.ForeignKey('inventory.Product', on_delete=models.CASCADE)
     purchase_order = models.ForeignKey(PurchaseOrder, on_delete=models.CASCADE)
     quantity_ordered = models.PositiveIntegerField()
     quantity_sent_to_logistics_center = models.PositiveIntegerField()
@@ -122,3 +121,21 @@ class EmployeeOrderProduct(OrderProduct):
         proxy = True
         verbose_name = 'Order Summary'
         verbose_name_plural = 'Order Summaries'
+
+
+class LogisticsCenterStockSnapshot(models.Model):
+    center = models.CharField(
+        max_length=100,
+        choices=[(c.name, c.value) for c in LogisticsCenterEnum],
+    )
+    snapshot_date_time = models.DateTimeField()
+    snapshot_file_path = models.TextField()
+    processed_date_time = models.DateTimeField()
+
+
+class LogisticsCenterStockSnapshotLine(models.Model):
+    stock_snapshot = models.ForeignKey(
+        LogisticsCenterStockSnapshot, on_delete=models.CASCADE, related_name='lines'
+    )
+    sku = models.TextField()
+    quantity = models.PositiveIntegerField()

@@ -1,7 +1,14 @@
+from io import BytesIO
+
 from django.contrib import messages
+from django.http import HttpResponse
 from django.utils.translation import ngettext
+from openpyxl import Workbook
 from rest_framework.reverse import reverse as drf_reverse
 
+from campaign.serializers import (
+    ProductSerializerQuickOfferAdmin,
+)
 from inventory.models import Product
 from logistics.tasks import send_order_to_logistics_center
 
@@ -153,20 +160,15 @@ class OrderActionsMixin:
                     'not finished'
                 )
 
-            for p in order.orderproduct_set.all():
-                if (
-                    p.product_id.product_id.product_type
-                    == Product.ProductTypeEnum.SENT_BY_SUPPLIER.name
-                ):
-                    errors.append(
-                        f'order {order.reference} has a product that is sent '
-                        'by supplier'
-                    )
-                if (
-                    p.product_id.product_id.product_kind
-                    == Product.ProductKindEnum.MONEY.name
-                ):
-                    errors.append(f'order {order.reference} has a money product')
+            if all(
+                p['product_type'] == Product.ProductTypeEnum.SENT_BY_SUPPLIER.name
+                or p['product_kind'] == Product.ProductKindEnum.MONEY.name
+                for p in order.ordered_products()
+            ):
+                errors.append(
+                    f'order {order.reference} has no products that should be '
+                    'sent to the logistics center'
+                )
 
         if len(errors) > 0:
             errors_str = ', '.join(errors)
@@ -192,3 +194,68 @@ class OrderActionsMixin:
             % scheduled_count,
             messages.SUCCESS,
         )
+
+
+class QuickOfferActionsMixin:
+    def finish_selected_quick_offers(self, request, queryset):
+        pass
+
+    def export_selected_quick_offers_as_xlsx(self, request, queryset):
+        if not queryset:
+            return
+
+        wb = Workbook()
+        ws = wb.active
+        ws.title = 'Quick Offers'
+
+        data = []
+        for quick_offer in queryset:
+            product_list = Product.objects.filter(
+                id__in=quick_offer.products.values_list('id', flat=True)
+            )
+            serializer = ProductSerializerQuickOfferAdmin(
+                product_list, context={'quick_offer': quick_offer}, many=True
+            )
+            for each in serializer.data:
+                data.append(each)
+
+        if not data:
+            return
+
+        ws.append(
+            [
+                'name',
+                'supplier_name',
+                'sku',
+                'total_cost',
+                'sale_price',
+                'organization_price',
+                'profit',
+                'profit_percentage',
+            ]
+        )
+
+        for d in data:
+            ws.append(
+                [
+                    d['name'],
+                    d['supplier_name'],
+                    d['sku'],
+                    d['total_cost'],
+                    d['sale_price'],
+                    d['organization_price'],
+                    d['profit'],
+                    d['profit_percentage'],
+                ]
+            )
+
+        output = BytesIO()
+        wb.save(output)
+        output.seek(0)
+
+        response = HttpResponse(
+            output,
+            content_type='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+        )
+        response['Content-Disposition'] = 'attachment; filename="quick_offers.xlsx"'
+        return response

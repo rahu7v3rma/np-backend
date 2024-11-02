@@ -10,6 +10,7 @@ from campaign.models import (
     Employee,
     EmployeeGroupCampaign,
     OrganizationProduct,
+    QuickOffer,
 )
 from inventory.models import Product
 
@@ -114,6 +115,17 @@ def get_campaign_product_price(campaign: Campaign, product: Product) -> int:
         return product.sale_price
 
 
+def get_quick_offer_product_price(quick_offer: QuickOffer, product: Product) -> int:
+    organization_product = OrganizationProduct.objects.filter(
+        organization=quick_offer.organization, product=product
+    ).first()
+
+    if organization_product and organization_product.price:
+        return organization_product.price
+    else:
+        return product.sale_price
+
+
 def _set_employee_admin_preview(employee: Employee) -> None:
     employee._admin_preview = True
 
@@ -150,3 +162,37 @@ def format_with_none_replacement(format_string, **kwargs):
         for key, value in kwargs.items()
     }
     return format_string.format(**cleaned_kwargs)
+
+
+class QuickOfferAuthentication(BaseAuthentication):
+    def authenticate(self, request):
+        try:
+            auth = str(request.headers.get('X-Authorization'))
+            assert auth.startswith('Bearer ')
+            token = auth.replace('Bearer ', '')
+            assert len(token)
+            decoded_token = jwt.decode(
+                jwt=token,
+                key=settings.JWT_SECRET_KEY,
+                algorithms=[settings.JWT_ALGORITHM],
+            )
+            assert isinstance(decoded_token, dict)
+            quick_offer_id = int(decoded_token.get('quick_offer_id'))
+            quick_offer = QuickOffer.objects.get(id=quick_offer_id)
+            setattr(request, 'quick_offer', quick_offer)
+            return (None, token)
+        except Exception:
+            pass
+
+        return None
+
+    def authenticate_header(self, request):
+        return 'Bearer'
+
+
+class QuickOfferPermissions(BasePermission):
+    def has_permission(self, request, view):
+        return (
+            isinstance(getattr(request, 'quick_offer', None), QuickOffer)
+            and request.quick_offer.status == QuickOffer.StatusEnum.ACTIVE.name
+        )

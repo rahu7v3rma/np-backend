@@ -1,0 +1,37 @@
+{% extends "admin/change_list.html" %}
+{% load i18n admin_urls %}
+{% block extrastyle %}
+    {{ block.super }}
+    <script src="https://code.jquery.com/jquery-3.7.1.min.js" integrity="sha256-/JqT3SQfawRcv/BIHPThkBvs0OEvtFFmqPF/lYI/Cxo=" crossorigin="anonymous"></script>
+    <script>
+        $(document).ready(()=>{
+            const handleCampaignOrganizationFilters = () => {
+                const removeIcon = '<span style="color: black; font-weight: 500; position: relative; top: 1px;">✖ </span>';
+                const searchParams = new URLSearchParams(window.location.search);
+                for(const filterKey of ['Campaign', 'Organization']){
+                    const queryKey = filterKey.toLowerCase();
+                    const queryVal = searchParams.get(queryKey)?.split(',') || [];
+                    const filterList = $(`details[data-filter-title=${filterKey}]>ul>li:not(:first-child)`);
+                    for(const li of filterList){
+                        const filterVal = new URLSearchParams($(li).find('a').attr('href')).get(queryKey);
+                        if(queryVal.includes(filterVal)){
+                            $(li).addClass('selected');
+                            $(li).find('a').prepend(removeIcon);
+                        }
+                        $(li).find('a').click((e)=>{
+                             e.preventDefault();
+                             if(queryVal.includes(filterVal)) queryVal.splice(queryVal.indexOf(filterVal), 1);
+                             else queryVal.push(filterVal);
+                             if(queryVal.length) searchParams.set(queryKey, queryVal.join(','));
+                             else searchParams.delete(queryKey);
+                             window.location.search = searchParams.toString();
+                        });
+                    }
+                }
+            }
+
+            handleCampaignOrganizationFilters();
+        });
+    </script>
+{% endblock %}
+

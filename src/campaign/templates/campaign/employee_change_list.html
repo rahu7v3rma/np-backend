@@ -1,0 +1,61 @@
+{% extends 'admin/change_list.html' %}
+
+{% block extrahead %}
+    {{ block.super }}
+    <script src="https://code.jquery.com/jquery-3.6.0.min.js"></script>
+    <link rel="stylesheet" href="https://code.jquery.com/ui/1.12.1/themes/base/jquery-ui.css">
+    <script src="https://code.jquery.com/ui/1.12.1/jquery-ui.min.js"></script>
+    <script>
+        const redirect = (param, e) => {
+            var url = new URL(window.location.href);
+            if (!param)
+            {
+                url.searchParams.delete("q");
+            }
+            else {
+                url.searchParams.set("q", param);
+            }
+            if(e)
+            {
+                url.searchParams.set("e", 1);
+            }
+            else {
+                url.searchParams.delete("e");
+            }
+            window.location.href = url.href;
+        }
+        $(document).ready(()=>{
+            const searchBarInitValue = $('#searchbar').val();
+            $("form#changelist-search input#searchbar").autocomplete({
+                source: JSON.parse('{{ employees|escapejs }}'),
+                delay: 500,
+                minLength: 0,
+                open: function () {
+                    if(searchBarInitValue !== $('#searchbar').val()){
+                        redirect($('#searchbar').val(), false);
+                    }
+                },
+                select: function (event, ui) {
+                    if(searchBarInitValue !== $('#searchbar').val()){
+                        redirect(ui.item.value, true);
+                    }
+                },
+                close: function () {
+                    redirect($('#searchbar').val(), $('#searchbar').val() ? true : false);
+                },
+                response: function(event, ui) {
+                    if (!ui.content.length && searchBarInitValue !== $('#searchbar').val()) {
+                        redirect($('#searchbar').val(), false);
+                    }
+                },
+            });
+            const pageLink = new URL(window.location.href);
+            if(searchBarInitValue && !pageLink.searchParams.get("e")){
+                $('#searchbar').focus();
+                strLength = searchBarInitValue.length * 2;
+                $('#searchbar')[0].setSelectionRange(strLength, strLength);
+                $("form#changelist-search input#searchbar").autocomplete("search");
+            }
+        });
+    </script>
+{% endblock %}

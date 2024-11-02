@@ -95,6 +95,7 @@ def send_reset_password_email(email: str, reset_password_link: str):
 
 def send_otp_token_email(email: str, otp_token: str):
     context = {'otp_token': otp_token}
+    print(context)
     res = send_mail(
         [email],
         'Your OTP Token',
@@ -181,5 +182,17 @@ def send_purchase_order_email(purchase_order: PurchaseOrder):
         context=context,
         plaintext_email_template='emails/purchase_order.txt',
         html_email_template='emails/purchase_order.html',
+    )
+    return res
+
+
+def send_stock_alert_email(email: str, products: str):
+    context = {'products': products}
+    res = send_mail(
+        [email],
+        'Stock alert',
+        context=context,
+        plaintext_email_template='emails/stock_alert.txt',
+        html_email_template='emails/stock_alert.html',
     )
     return res

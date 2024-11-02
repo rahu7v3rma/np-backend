@@ -39,5 +39,24 @@
                     })
                 });
             })
+        $(document).ready(()=>{
+            const handle_required_fields = () => {
+                const required_fields = [
+                    'organization',
+                    'employee_group',
+                    'first_name_en',
+                    'first_name_he',
+                    'last_name_en',
+                    'last_name_he',
+                    'auth_id',
+                    'email',
+                    'phone_number',
+                    'default_language'
+                ]
+                for(const field of required_fields) $(`label[for="id_${field}"]`).addClass('required');
+            }
+
+            handle_required_fields();
+        })
     </script>
 {% endblock %}

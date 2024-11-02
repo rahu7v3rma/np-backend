@@ -6,8 +6,11 @@ from django.conf import settings
 from django.contrib import messages
 from django.contrib.auth.mixins import LoginRequiredMixin
 from django.core.files.storage import default_storage
+from django.db.models import CharField, F, Q, Value
+from django.db.models.functions import Concat
 from django.forms import formset_factory
 from django.forms.models import model_to_dict
+from django.http import HttpResponse
 from django.shortcuts import redirect
 from django.utils.translation import ngettext
 from django.views.generic import View
@@ -17,9 +20,12 @@ from rest_framework.views import APIView
 
 from campaign.admin_forms import (
     AddCampaignProductsForm,
+    AddQuickOfferProductsForm,
     CampaignCustomizationForm,
     CampaignForm,
     EmployeeGroupCampaignForm,
+    QuickOfferCustomizationForm,
+    QuickOfferForm,
 )
 from campaign.models import (
     Campaign,
@@ -27,7 +33,10 @@ from campaign.models import (
     CampaignImpersonationToken,
     EmployeeGroupCampaign,
     EmployeeGroupCampaignProduct,
+    Order,
+    QuickOffer,
 )
+from common.admin_views import BaseAutocompleteView
 from inventory.models import (
     Product,
 )
@@ -154,6 +163,7 @@ class CampaignCreationWizard(SessionWizardView):
                             'budget_per_employee',
                             'product_selection_mode',
                             'displayed_currency',
+                            'check_out_location',
                         )
                         return employee_group_campaigns
             elif step == '2':
@@ -227,6 +237,9 @@ class CampaignCreationWizard(SessionWizardView):
                             'displayed_currency': employee_group_campaign_data[
                                 'displayed_currency'
                             ],
+                            'check_out_location': employee_group_campaign_data[
+                                'check_out_location'
+                            ],
                         },
                     )
                 )
@@ -280,6 +293,7 @@ class CampaignImpersonateView(APIView):
         campaign_employee_id=None,
     ):
         campaign = Campaign.objects.get(id=campaign_id)
+        show_link = request.GET.get('showLink') == '1'
 
         # if this is an admin preview request we will get an employee group
         # campaign id
@@ -302,15 +316,24 @@ class CampaignImpersonateView(APIView):
             employee_group_campaign=employee_group_campaign,
             campaign_employee=campaign_employee,
             user=request.user,
-            valid_until_epoch_seconds=int(time()) + 30,
+            valid_until_epoch_seconds=int(time()) + 60 * 60 * 12,
         )
 
-        # redirect to the employee site which is in charge of exchanging the
-        # token for a normal jwt
-        return redirect(
+        # the employee site is in charge of exchanging the token for a normal
+        # jwt token
+        employee_site_url = (
             f'{settings.EMPLOYEE_SITE_BASE_URL}/{campaign.code}/i?t='
             f'{urllib.parse.quote_plus(impersonation_token.token)}'
         )
+        if show_link:
+            # show the link so that it can be copied and used elsewhere
+            return HttpResponse(
+                f'<html><body><a href="{employee_site_url}">{employee_site_url}'
+                '</a></body></html>'
+            )
+        else:
+            # redirect to the employee site
+            return redirect(employee_site_url)
 
 
 class CampaignInvitationView(LoginRequiredMixin, View):
@@ -368,3 +391,154 @@ class CampaignInvitationView(LoginRequiredMixin, View):
             messages.error(request, f'An error occurred: {str(e)}')
 
         return redirect('admin:campaign_campaign_changelist')
+
+
+class CampaignEmployeeAutocompleteView(BaseAutocompleteView):
+    def get_queryset(self):
+        # return no results for unauthenticated requests
+        if not self.request.user.is_authenticated:
+            return CampaignEmployee.objects.none()
+
+        qs = CampaignEmployee.objects.all()
+
+        if self.q:
+            qs = (
+                qs.exclude(
+                    order__status__in=[
+                        Order.OrderStatusEnum.PENDING.name,
+                        Order.OrderStatusEnum.SENT_TO_LOGISTIC_CENTER.name,
+                    ]
+                )
+                .annotate(
+                    full_name_en=Concat(
+                        F('employee__first_name_en'),
+                        Value(' '),
+                        F('employee__last_name_en'),
+                        output_field=CharField(),
+                    ),
+                    full_name_he=Concat(
+                        F('employee__first_name_he'),
+                        Value(' '),
+                        F('employee__last_name_he'),
+                        output_field=CharField(),
+                    ),
+                )
+                .filter(
+                    Q(full_name_en__icontains=self.q)
+                    | Q(full_name_he__icontains=self.q)
+                    | Q(campaign__name_en__icontains=self.q)
+                    | Q(campaign__name_he__icontains=self.q)
+                    | Q(campaign__organization__name_en__icontains=self.q)
+                    | Q(campaign__organization__name_he__icontains=self.q)
+                )
+            )
+
+        return qs
+
+    def get_result_label(self, result):
+        return (
+            f'{result.employee.full_name} | {result.campaign.name} | '
+            f'{result.campaign.organization.name}'
+        )
+
+
+class QuickOfferCreationWizard(SessionWizardView):
+    template_name = 'admin/quick_offer_form.html'
+    file_storage = default_storage
+    form_list = [
+        QuickOfferForm,
+        formset_factory(AddQuickOfferProductsForm, extra=0, min_num=1),
+        formset_factory(QuickOfferCustomizationForm, extra=0, min_num=1),
+    ]
+
+    def post(self, *args, **kwargs):
+        if self.request.POST.get('1-0-products'):
+            form = self.get_form(step='1', data=self.request.POST)
+            if form.is_valid():
+                self.storage.set_step_data('1', self.process_step(form))
+        return super().post(*args, **kwargs)
+
+    def get_form_initial(self, step):
+        quick_offer_id = self.request.GET.get('quick_offer_id')
+        duplicate = self.request.GET.get('duplicate') in ('1', 'true', 'yes')
+        if quick_offer_id:
+            quick_offer = QuickOffer.objects.get(id=int(quick_offer_id))
+            if step == '0':
+                initial = model_to_dict(quick_offer)
+                if duplicate:
+                    initial.pop('organization', None)
+                return initial
+            elif step == '2':
+                return [model_to_dict(quick_offer)]
+        if step == '2':
+            return [
+                {
+                    'login_page_title': 'default',
+                    'login_page_title_he': 'default',
+                    'login_page_subtitle': 'default',
+                    'login_page_subtitle_he': 'default',
+                    'main_page_first_banner_title': 'default',
+                    'main_page_first_banner_title_he': 'default',
+                    'main_page_first_banner_subtitle': 'default',
+                    'main_page_first_banner_subtitle_he': 'default',
+                    'main_page_second_banner_title': 'default',
+                    'main_page_second_banner_title_he': 'default',
+                    'main_page_second_banner_subtitle': 'default',
+                    'main_page_second_banner_subtitle_he': 'default',
+                    'main_page_second_banner_text_color': 'WHITE',
+                    'sms_sender_name': 'default',
+                    'sms_welcome_text': 'default',
+                    'sms_welcome_text_he': 'default',
+                    'email_welcome_text': 'default',
+                    'email_welcome_text_he': 'default',
+                }
+            ]
+        return self.initial_dict.get(step, {})
+
+    def get_context_data(self, form, **kwargs):
+        context = super().get_context_data(form=form, **kwargs)
+        quick_offer_id = self.request.GET.get('quick_offer_id')
+        duplicate = self.request.GET.get('duplicate') in ('1', 'true', 'yes')
+        if self.steps.current == '1':
+            organization_id = self.get_cleaned_data_for_step('0').get('organization').id
+            meta = {
+                'organization_id': organization_id,
+                'employee_groups': [{'name': '', 'budget': ''}],
+            }
+            if quick_offer_id and not duplicate:
+                quick_offer = QuickOffer.objects.get(id=int(quick_offer_id))
+                meta['products'] = {
+                    '0': list(quick_offer.products.all().values_list('id', flat=True))
+                }
+            context['meta'] = json.dumps(meta)
+        return context
+
+    def done(self, form_list, **kwargs):
+        quick_offer_id = self.request.GET.get('quick_offer_id')
+        duplicate = self.request.GET.get('duplicate') in ('1', 'true', 'yes')
+        if quick_offer_id and not duplicate:
+            quick_offer = QuickOffer.objects.get(id=int(quick_offer_id))
+            quick_offer.products.clear()
+            quick_offer.tags.clear()
+            if form_list[0].is_valid():
+                for attr, value in form_list[0].clean().items():
+                    if attr != 'tags':
+                        setattr(quick_offer, attr, value)
+            tags = self.get_cleaned_data_for_step('0').get('tags')
+            for tag in tags:
+                quick_offer.tags.add(tag)
+        else:
+            quick_offer = form_list[0].save()
+
+        product_list = self.storage.get_step_data('1').getlist('1-0-products')
+        products = Product.objects.filter(pk__in=product_list)
+        for product in products:
+            quick_offer.products.add(product)
+
+        if form_list[2].is_valid():
+            for form in form_list[2].forms:
+                for attr, value in form.clean().items():
+                    setattr(quick_offer, attr, value)
+
+        quick_offer.save()
+        return redirect('admin:campaign_quickoffer_changelist')

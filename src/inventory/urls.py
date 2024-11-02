@@ -1,6 +1,7 @@
 from django.urls import path
 
-from .views import ProductView, SupplierProductsView, SupplierView
+from .admin_views import BundledProductAutocompleteView
+from .views import ProductSkuSearchView, ProductView, SupplierProductsView, SupplierView
 
 
 urlpatterns = [
@@ -18,5 +19,15 @@ urlpatterns = [
         'supplier-products',
         SupplierProductsView.as_view(),
         name='supplier-products',
+    ),
+    path(
+        'product-sku-search',
+        ProductSkuSearchView.as_view(),
+        name='product-sku-search',
+    ),
+    path(
+        'bundled-product-autocomplete',
+        BundledProductAutocompleteView.as_view(),
+        name='bundled-product-autocomplete',
     ),
 ]

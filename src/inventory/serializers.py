@@ -123,3 +123,7 @@ class GetSupplierSerializer(ModelSerializer):
     class Meta:
         model = Supplier
         fields = ['name']
+
+
+class ProductSkuSearchSerializer(Serializer):
+    q = CharField(max_length=255)

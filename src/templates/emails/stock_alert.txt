@@ -1,0 +1,3 @@
+Stock alert
+
+The following products reached the stock threshold : {{ products }}

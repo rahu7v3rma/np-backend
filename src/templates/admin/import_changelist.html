@@ -2,11 +2,113 @@
 
 {% block object-tools %}
     <ul class="object-tools">
-        <li style="margin-top: 17px; margin-right: 140px;">
+        <li style="margin-top: 17px; margin-right: 180px;">
             <a href="import-data/">Import from XLSX</a>
         </li>
     </ul>
 
     <br />
     {{ block.super }}
+{% endblock %}
+
+{% block extrahead %}
+    {{ block.super }}
+    <script src="https://code.jquery.com/jquery-3.6.0.min.js"></script>
+    <script>
+        $(document).ready(() => {
+            const debounce = (func, delay = 500) => {
+                let timer;
+                return (...args) => {
+                    clearTimeout(timer);
+                    timer = setTimeout(() => {
+                        func.apply(this, args);
+                    }, delay);
+                };
+            };
+
+            const handleSearch = () => {
+                const inputSelector = "form#changelist-search input#searchbar";
+                const input = $(inputSelector);
+
+                const performSearch = debounce((e) => {
+                    const query = e.target.value;
+                    const params = new URLSearchParams(window.location.search);
+
+                    if (query) {
+                        params.set('q', query);
+                    } else {
+                        params.delete('q');
+                    }
+
+                    window.location.search = params.toString();
+                });
+
+                input.on('input', performSearch);
+
+                if (window.location.search.includes('q=')) {
+                    input.focus();
+                    const currentValue = input.val();
+                    input.val('').val(currentValue);
+                }
+            };
+            handleSearch();
+        });
+    </script>
+    {{ block.super }}
+    <script src="https://code.jquery.com/jquery-3.6.0.min.js"></script>
+    <link rel="stylesheet" href="https://code.jquery.com/ui/1.12.1/themes/base/jquery-ui.css">
+    <script src="https://code.jquery.com/ui/1.12.1/jquery-ui.min.js"></script>
+    <script>
+        const redirect = (param, e) => {
+            var url = new URL(window.location.href);
+            if (!param)
+            {
+                url.searchParams.delete("q");
+            }
+            else {
+                url.searchParams.set("q", param);
+            }
+            if(e)
+            {
+                url.searchParams.set("e", 1);
+            }
+            else {
+                url.searchParams.delete("e");
+            }
+            window.location.href = url.href;
+        }
+        $(document).ready(()=>{
+            const searchBarInitValue = $('#searchbar').val();
+            $("form#changelist-search input#searchbar").autocomplete({
+                source: JSON.parse('{{ organization_names|escapejs }}'),
+                delay: 500,
+                minLength: 0,
+                open: function () {
+                    if(searchBarInitValue !== $('#searchbar').val()){
+                        redirect($('#searchbar').val(), false);
+                    }
+                },
+                select: function (event, ui) {
+                    if(searchBarInitValue !== $('#searchbar').val()){
+                        redirect(ui.item.value, true);
+                    }
+                },
+                close: function () {
+                    redirect($('#searchbar').val(), $('#searchbar').val() ? true : false);
+                },
+                response: function(event, ui) {
+                    if (!ui.content.length && searchBarInitValue !== $('#searchbar').val()) {
+                        redirect($('#searchbar').val(), false);
+                    }
+                },
+            });
+            const pageLink = new URL(window.location.href);
+            if(searchBarInitValue && !pageLink.searchParams.get("e")){
+                $('#searchbar').focus();
+                strLength = searchBarInitValue.length * 2;
+                $('#searchbar')[0].setSelectionRange(strLength, strLength);
+                $("form#changelist-search input#searchbar").autocomplete("search");
+            }
+        });
+    </script>
 {% endblock %}

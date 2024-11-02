@@ -231,6 +231,8 @@ def export_orders_as_xlsx(
         'delivery additional details',
         'product type',
         'organization price',
+        'status',
+        'DC status',
     ]
 
     workbook = Workbook()
@@ -248,7 +250,7 @@ def export_orders_as_xlsx(
         .all()
     ):
         order_serializer = OrderExportSerializer(order).data
-        for order_product in order_serializer.get('order_products'):
+        for order_product in order.ordered_products():
             record = []
             record.append(order.order_id)
             record.append(order_serializer.get('reference'))
@@ -260,33 +262,33 @@ def export_orders_as_xlsx(
             record.append(order_serializer.get('phone_number'))
             record.append(order_serializer.get('additional_phone_number'))
             record.append(order.organization())
-            record.append(order_product.get('product').get('name'))
-            record.append(order_product.get('product').get('sku'))
-            record.append(order_product.get('product').get('supplier').get('name'))
-            record.append(order_product.get('product').get('brand').get('name'))
+            record.append(order_product.get('name'))
+            record.append(order_product.get('sku'))
+            record.append(order_product.get('supplier').get('name'))
+            record.append(order_product.get('brand').get('name'))
             record.append(order_product.get('quantity'))
-            record.append(order_product.get('product').get('cost_price'))
-            record.append(
-                order_product.get('product').get('logistics_rate_cost_percent')
-            )
-            record.append(order_product.get('product').get('total_cost'))
+            record.append(order_product.get('cost_price'))
+            record.append(order_product.get('logistics_rate_cost_percent'))
+            record.append(order_product.get('total_cost'))
             record.append(order_serializer.get('order_date_time'))
             record.append(order_serializer.get('delivery_street'))
             record.append(order_serializer.get('delivery_street_number'))
             record.append(order_serializer.get('delivery_apartment_number'))
             record.append(order_serializer.get('delivery_city'))
             record.append(order_serializer.get('delivery_additional_details'))
-            record.append(order_product.get('product').get('product_type'))
+            record.append(order_product.get('product_type'))
             record.append(
                 getattr(
                     OrganizationProduct.objects.filter(
-                        product=order_product.get('product').get('id'),
+                        product=order_product.get('id'),
                         organization=order_serializer.get('organization'),
                     ).first(),
                     'price',
-                    order_product.get('product').get('cost_price'),
+                    order_product.get('sale_price'),
                 )
             )
+            record.append(order_serializer.get('status'))
+            record.append(order_serializer.get('logistics_center_status'))
             worksheet.append(record)
 
     storage = storages['exports']

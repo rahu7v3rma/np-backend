@@ -93,7 +93,7 @@
       onchange="if (this.value) {
         // replace only the last occurrence of 0, since server-rendered
         // reversed url can't take into account a javascript value
-        window.open('{% url 'admin:campaign_preview_view' object_id 0 %}'.replace(/0([^0]*)$/, `${this.value}$1`),'_blank');
+        window.open('{% url 'admin:campaign_preview_view' object_id 0 %}?showLink=1'.replace(/0([^0]*)$/, `${this.value}$1`),'_blank');
       }"
     >
         <option value="">Select Group to Preview Campaign</option>

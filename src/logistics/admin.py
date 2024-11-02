@@ -6,7 +6,7 @@ from django import forms
 from django.contrib import admin, messages
 from django.contrib.admin import helpers
 from django.contrib.admin.views.main import ChangeList
-from django.db.models import F, OuterRef, Q, Subquery, Sum
+from django.db.models import F, OuterRef, Q, Subquery, Sum, Value
 from django.db.models.functions import Coalesce
 from django.http import HttpResponse
 from django.shortcuts import redirect, render
@@ -360,10 +360,17 @@ class OrderSummaryAdmin(admin.ModelAdmin):
         'product_quantity',
         'in_transit_stock',
         'dc_stock',
+        'product_snapshot_stock',
         'difference_to_order',
+        'product_snapshot_stock_date_time',
     )
     list_display_links = None
-    ordering = ('product_id__product_id__sku',)
+    ordering = (
+        Coalesce(
+            F('product_id__product_id__bundled_items__product__sku'),
+            F('product_id__product_id__sku'),
+        ),
+    )
     list_filter = (
         'product_id__product_id__supplier',
         'product_id__product_id__brand',
@@ -391,7 +398,12 @@ class OrderSummaryAdmin(admin.ModelAdmin):
 
     def get_queryset(self, request):
         qs = super().get_queryset(request)
-        qs = qs.filter(order_id__status=Order.OrderStatusEnum.PENDING.name)
+        qs = qs.filter(
+            order_id__status__in=(
+                Order.OrderStatusEnum.PENDING.name,
+                Order.OrderStatusEnum.SENT_TO_LOGISTIC_CENTER.name,
+            ),
+        )
 
         sent_to_dc_subquery = Subquery(
             PurchaseOrderProduct.objects.filter(product_id_id=OuterRef('product_pk'))
@@ -412,13 +424,56 @@ class OrderSummaryAdmin(admin.ModelAdmin):
 
         qs = (
             qs.annotate(
-                product_pk=F('product_id__product_id_id'),
-                product_supplier=F('product_id__product_id__supplier__name'),
-                product_brand=F('product_id__product_id__brand__name'),
-                product_sku=F('product_id__product_id__sku'),
-                product_reference=F('product_id__product_id__reference'),
-                product_cost_price=F('product_id__product_id__cost_price'),
-                product_quantity=F('product_id__product_id__product_quantity'),
+                product_pk=Coalesce(
+                    F('product_id__product_id__bundled_items__product__id'),
+                    F('product_id__product_id_id'),
+                ),
+                product_supplier=Coalesce(
+                    F('product_id__product_id__bundled_items__product__supplier__name'),
+                    F('product_id__product_id__supplier__name'),
+                ),
+                product_brand=Coalesce(
+                    F('product_id__product_id__bundled_items__product__brand__name'),
+                    F('product_id__product_id__brand__name'),
+                ),
+                product_sku=Coalesce(
+                    F('product_id__product_id__bundled_items__product__sku'),
+                    F('product_id__product_id__sku'),
+                ),
+                product_reference=Coalesce(
+                    F('product_id__product_id__bundled_items__product__reference'),
+                    F('product_id__product_id__reference'),
+                ),
+                product_cost_price=Coalesce(
+                    F('product_id__product_id__bundled_items__product__cost_price'),
+                    F('product_id__product_id__cost_price'),
+                ),
+                product_quantity=Coalesce(
+                    F(
+                        'product_id__product_id__bundled_items__product__product_quantity'
+                    ),
+                    F('product_id__product_id__product_quantity'),
+                ),
+                product_snapshot_stock=Coalesce(
+                    F(
+                        'product_id__product_id__bundled_items__product__logistics_snapshot_stock_line__quantity'
+                    ),
+                    F(
+                        'product_id__product_id__logistics_snapshot_stock_line__quantity'
+                    ),
+                ),
+                product_snapshot_stock_date_time=Coalesce(
+                    F(
+                        'product_id__product_id__bundled_items__product__logistics_snapshot_stock_line__stock_snapshot__snapshot_date_time'
+                    ),
+                    F(
+                        'product_id__product_id__logistics_snapshot_stock_line__stock_snapshot__snapshot_date_time'
+                    ),
+                ),
+                ordered_quantity=F('quantity')
+                * Coalesce(
+                    F('product_id__product_id__bundled_items__quantity'), Value(1)
+                ),
             )
             .values(
                 'product_pk',
@@ -428,9 +483,11 @@ class OrderSummaryAdmin(admin.ModelAdmin):
                 'product_reference',
                 'product_cost_price',
                 'product_quantity',
+                'product_snapshot_stock',
+                'product_snapshot_stock_date_time',
             )
             .annotate(
-                total_ordered=Sum(F('quantity')),
+                total_ordered=Sum(F('ordered_quantity')),
                 sent_to_dc=Coalesce(sent_to_dc_subquery, 0),
                 dc_stock=Coalesce(dc_stock_subquery, 0),
             )
@@ -579,6 +636,24 @@ class OrderSummaryAdmin(admin.ModelAdmin):
 
     dc_stock.short_description = 'DC Stock'
 
+    def product_snapshot_stock(self, obj):
+        # this method isn't invoked, but is required for django to validate the
+        # list_display fields. it returns a static value so as to not confuse
+        # if the value ever needs to be changed (all values are computed in the
+        # queryset above)
+        return ''
+
+    product_snapshot_stock.short_description = 'DC Snapshot Stock'
+
+    def product_snapshot_stock_date_time(self, obj):
+        # this method isn't invoked, but is required for django to validate the
+        # list_display fields. it returns a static value so as to not confuse
+        # if the value ever needs to be changed (all values are computed in the
+        # queryset above)
+        return ''
+
+    product_snapshot_stock_date_time.short_description = 'DC Snapshot Stock Date Time'
+
     def difference_to_order(self, obj):
         # this method isn't invoked, but is required for django to validate the
         # list_display fields. it returns a static value so as to not confuse
@@ -587,3 +662,6 @@ class OrderSummaryAdmin(admin.ModelAdmin):
         return ''
 
     difference_to_order.short_description = 'Difference To Order'
+
+    class Media:
+        js = ('js/order_summary.js',)

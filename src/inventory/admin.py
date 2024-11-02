@@ -1,23 +1,40 @@
-import json
 import os
 from typing import Any
 import uuid
 
+from dal import autocomplete
 from django import forms
+from django.conf import settings
 from django.contrib import admin, messages
 from django.core.exceptions import ValidationError
 from django.core.files.base import ContentFile
 from django.db import models
+from django.http import HttpResponse
+from django.urls import reverse
 from django.utils.datastructures import MultiValueDict
 from django.utils.html import format_html
+from django.utils.http import urlencode
+from django.utils.safestring import mark_safe
 from django.utils.translation import gettext as _
 from modeltranslation.admin import TranslationAdmin
-from openpyxl import load_workbook
+from openpyxl import Workbook
 
 from campaign.models import Campaign, EmployeeGroupCampaignProduct
-from inventory.models import Brand, Category, Product, ProductImage, Supplier, Tag
+from common.mixins import ActiveObjectsAdminMixin
+from inventory.models import (
+    Brand,
+    BrandSupplier,
+    Category,
+    CategoryProduct,
+    Product,
+    ProductBundleItem,
+    ProductImage,
+    Supplier,
+    Tag,
+)
 from lib.admin import ImportableExportableAdmin, RecordImportError
 from logistics.tasks import sync_product_with_logistics_center
+from services.email import send_stock_alert_email
 
 from .admin_forms import ModelWithImagesXlsxImportForm
 
@@ -50,27 +67,38 @@ class ProductImagesInline(admin.TabularInline):
     formset = ProductImageInlineFormset
 
 
-class ProductsInline(admin.TabularInline):
-    model = Product
-    fields = ['name']
-    readonly_fields = ['name']
-    show_change_link = True
-    can_delete = False
-    template = 'inventory/product_inline.html'
-
-    def has_add_permission(self, request, obj):
-        return False
-
-
 @admin.register(Brand)
-class BrandAdmin(ImportableExportableAdmin):
-    list_display = ('name', 'logo')
+class BrandAdmin(ActiveObjectsAdminMixin, ImportableExportableAdmin):
+    list_display = ('name', 'logo', 'is_deleted', 'updated_at')
     change_list_template = 'admin/import_changelist.html'
+
+    list_filter = ('is_deleted',)
+    fieldsets = [
+        (
+            None,
+            {
+                'fields': (
+                    'is_deleted',
+                    'name',
+                    'logo_image',
+                    'updated_at',
+                    'created_at',
+                ),
+            },
+        ),
+        ('BRAND PRODUCTS', {'fields': ('brand_products_link',)}),
+    ]
+    readonly_fields = (
+        'updated_at',
+        'created_at',
+        'brand_products_link',
+    )
+    search_fields = ('name',)
 
     import_form = ModelWithImagesXlsxImportForm
 
     def get_inlines(self, request, obj):
-        return [ProductsInline] if obj else []
+        return [BrandSupplierInline] if obj else []
 
     def import_parse_field(
         self,
@@ -100,10 +128,60 @@ class BrandAdmin(ImportableExportableAdmin):
             )
         return None
 
+    def brand_products_link(self, obj):
+        count = obj.brand_products.count()
+
+        brand_product_changelist_url = reverse('admin:inventory_product_changelist')
+        search_params = urlencode({'brand__id__exact': obj.id})
+
+        return mark_safe(
+            f'<a href="{brand_product_changelist_url}?{search_params}">'
+            f'Total products: {count}</a>'
+        )
+
+    brand_products_link.short_description = 'Brand products'
+
+
+class BrandSupplierInline(admin.TabularInline):
+    model = BrandSupplier
+    extra = 1
+
 
 @admin.register(Supplier)
-class SupplierAdmin(ImportableExportableAdmin):
-    list_display = ('name',)
+class SupplierAdmin(ActiveObjectsAdminMixin, ImportableExportableAdmin):
+    list_display = (
+        'name',
+        'email',
+        'phone_number',
+        'is_deleted',
+        'updated_at',
+    )
+    list_filter = ('is_deleted',)
+    fieldsets = [
+        (
+            None,
+            {
+                'fields': (
+                    'is_deleted',
+                    'name',
+                    'house_number',
+                    'address_city',
+                    'address_street',
+                    'address_street_number',
+                    'email',
+                    'phone_number',
+                    'updated_at',
+                    'created_at',
+                ),
+            },
+        ),
+        ('SUPPLIER PRODUCTS', {'fields': ('supplier_products_link',)}),
+    ]
+    readonly_fields = (
+        'updated_at',
+        'created_at',
+        'supplier_products_link',
+    )
     change_list_template = 'admin/import_changelist.html'
     search_fields = [
         'name_en',
@@ -116,10 +194,24 @@ class SupplierAdmin(ImportableExportableAdmin):
         'address_street_number_he',
         'email',
         'phone_number',
+        'house_number',
     ]
 
     def get_inlines(self, request, obj):
-        return [ProductsInline] if obj else []
+        return [BrandSupplierInline] if obj else []
+
+    def supplier_products_link(self, obj):
+        count = obj.supplier_products.count()
+
+        supplier_product_changelist_url = reverse('admin:inventory_product_changelist')
+        search_params = urlencode({'supplier__id__exact': obj.id})
+
+        return mark_safe(
+            f'<a href="{supplier_product_changelist_url}?{search_params}">'
+            f'Total products: {count}</a>'
+        )
+
+    supplier_products_link.short_description = 'Supplier products'
 
 
 def custom_titled_filter(title):
@@ -165,48 +257,73 @@ class TagInline(admin.TabularInline):
     extra = 1
 
 
+class BundledProductInlineForm(forms.ModelForm):
+    class Meta:
+        model = ProductBundleItem
+        fields = '__all__'
+        widgets = {
+            'product': autocomplete.ModelSelect2(url='bundled-product-autocomplete')
+        }
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+
+        # override label from instance to set the inital selected label before
+        # the select widget was used
+        self.fields['product'].label_from_instance = (
+            lambda obj: f'{obj.sku} - {obj.name}'
+        )
+
+
 class ProductAdminForm(forms.ModelForm):
     class Meta:
         model = Product
         fields = '__all__'
 
-    def __init__(self, *args, **kwargs):
-        super().__init__(*args, **kwargs)
-        self.fields['sku'].widget = forms.TextInput()
-        # Store the choices in an attribute
-        self.sku_choices = self.get_sku_choices()
-        self.products = self.get_product_data()
-        if self.instance and self.instance.pk:
-            self.selected_skus = (
-                self.instance.sku.split(',') if self.instance.sku else []
-            )
+    def full_clean(self):
+        # disable the required flag for fields that are calculated
+        # automatically for bundle products. after the first clean we can check
+        # if the object is a bundle and if not restore the flags and re-clean
+        self.fields['sku'].required = False
+        self.fields['supplier'].required = False
+        self.fields['brand'].required = False
+        self.fields['cost_price'].required = False
 
-    def get_sku_choices(self):
-        skus = Product.objects.exclude(
-            product_kind=Product.ProductKindEnum.BUNDLE.name
-        ).values_list('sku', flat=True)
-        return [sku for sku in skus]
+        super().full_clean()
 
-    def get_product_data(self):
-        products = Product.objects.exclude(
-            product_kind=Product.ProductKindEnum.BUNDLE.name
-        ).values(
-            'sku',
-            'cost_price',
-            'delivery_price',
-            'logistics_rate_cost_percent',
-            'google_price',
-            'sale_price',
-            'brand',
-        )
-        data = list(products)
-        return data
+        self.fields['sku'].required = True
+        self.fields['supplier'].required = True
+        self.fields['brand'].required = True
+        self.fields['cost_price'].required = True
 
-    def clean_skus(self):
-        skus = self.cleaned_data.get('sku')
-        if skus:
-            return [sku.strip() for sku in skus.split(',') if sku.strip()]
-        return []
+        if self.cleaned_data['product_kind'] != Product.ProductKindEnum.BUNDLE.name:
+            # clean again with the required flags back
+            super().full_clean()
+
+    def clean(self):
+        cleaned_data = super().clean()
+
+        # for new bundle items set initial placeholder values for the required
+        # fields, and they will be populated later when the bundled items form
+        # is saved
+        if cleaned_data['product_kind'] == Product.ProductKindEnum.BUNDLE.name:
+            if not cleaned_data['sku']:
+                cleaned_data['sku'] = 'PLACEHOLDER'
+            if not cleaned_data['cost_price']:
+                cleaned_data['cost_price'] = -1
+            if not cleaned_data['brand']:
+                cleaned_data['brand'] = Brand.objects.first()
+            if not cleaned_data['supplier']:
+                cleaned_data['supplier'] = Supplier.objects.first()
+
+        return cleaned_data
+
+
+class BundledProductsInline(admin.TabularInline):
+    model = ProductBundleItem
+    extra = 1
+    fk_name = 'bundle'
+    form = BundledProductInlineForm
 
 
 @admin.register(Product)
@@ -215,7 +332,7 @@ class ProductAdmin(ImportableExportableAdmin):
     change_list_template = 'admin/import_changelist.html'
     change_form_template = 'admin/product_change_form.html'
     actions = ['duplicate', 'export_as_xlsx', 'sync_with_logistic_center']
-    inlines = [CategoryInline, TagInline, ProductImagesInline]
+    inlines = [CategoryInline, TagInline, ProductImagesInline, BundledProductsInline]
     form = ProductAdminForm
     readonly_fields = ['total_cost']
 
@@ -244,6 +361,7 @@ class ProductAdmin(ImportableExportableAdmin):
 
     import_form = ModelWithImagesXlsxImportForm
     import_related_fields = ('categories', 'tags', 'images')
+    import_excluded_fields = ('active_campaigns',)
     fields = (
         'name_en',
         'name_he',
@@ -254,6 +372,7 @@ class ProductAdmin(ImportableExportableAdmin):
         'product_quantity',
         'supplier',
         'brand',
+        'offer',
         'link',
         'active',
         'cost_price',
@@ -272,37 +391,103 @@ class ProductAdmin(ImportableExportableAdmin):
         'exchange_policy_en',
         'exchange_policy_he',
     )
-    export_fields = (
-        'id',
-        'brand__name',
-        'supplier__name',
-        'reference',
-        'name_en',
-        'name_he',
-        'product_kind',
-        'product_type',
-        'product_quantity',
-        'description_en',
-        'description_he',
-        'sku',
-        'link',
-        'active',
-        'cost_price',
-        'delivery_price',
-        'logistics_rate_cost_percent',
-        'total_cost',
-        'google_price',
-        'sale_price',
-        'technical_details_en',
-        'technical_details_he',
-        'warranty_en',
-        'warranty_he',
-        'exchange_value',
-        'exchange_policy_en',
-        'exchange_policy_he',
-        'categories__name_en',
-        'tags__name_en',
-    )
+
+    def save_formset(self, request, form, formset, change):
+        super().save_formset(request, form, formset, change)
+
+        # if the current formset we are saving is the bundled products formset
+        # (as toled by the type of its empty form) make sure to update the
+        # parent product's calculated fields
+        if isinstance(formset.empty_form, BundledProductInlineForm):
+            form.instance.update_bundle_calculated_fields()
+
+    def export_as_xlsx(self, request, queryset):
+        field_names = [
+            'id',
+            'brand',
+            'supplier',
+            'reference',
+            'name_en',
+            'name_he',
+            'product_kind',
+            'product_type',
+            'description_en',
+            'description_he',
+            'sku',
+            'link',
+            'active',
+            'cost_price',
+            'delivery_price',
+            'logistics_rate_cost_percent',
+            'total_cost',
+            'google_price',
+            'sale_price',
+            'technical_details_en',
+            'technical_details_he',
+            'warranty_en',
+            'warranty_he',
+            'exchange_value',
+            'exchange_policy_en',
+            'exchange_policy_he',
+            'categories',
+            'tags',
+            'active_campaigns',
+            'product_quantity',
+        ]
+
+        response = HttpResponse(
+            content_type='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
+        )
+        response['Content-Disposition'] = 'attachment; filename=inventory.products.xlsx'
+
+        workbook = Workbook()
+        worksheet = workbook.active
+        worksheet.append(field_names)
+
+        for _product in queryset:
+            category = _product.categories.all().first()
+            category = category.name if category else ''
+            tags = _product.tags.all().first()
+            tags = tags.name if tags else ''
+            worksheet.append(
+                [
+                    _product.id,
+                    _product.brand.name,
+                    _product.supplier.name,
+                    _product.reference,
+                    _product.name_en,
+                    _product.name_he,
+                    _product.product_kind,
+                    _product.product_type,
+                    _product.description_en,
+                    _product.description_he,
+                    _product.sku,
+                    _product.link,
+                    _product.active,
+                    _product.cost_price,
+                    _product.delivery_price,
+                    _product.logistics_rate_cost_percent,
+                    _product.total_cost,
+                    _product.google_price,
+                    _product.sale_price,
+                    _product.technical_details_en,
+                    _product.technical_details_he,
+                    _product.warranty_en,
+                    _product.warranty_he,
+                    _product.exchange_value,
+                    _product.exchange_policy_en,
+                    _product.exchange_policy_he,
+                    category,
+                    tags,
+                    self.active_campaigns(obj=_product),
+                    _product.product_quantity,
+                ]
+            )
+
+        workbook.save(response)
+        return response
+
+    export_as_xlsx.short_description = 'Export selected products as XLSX'
 
     def import_parse_and_save_xlsx_data(
         self, extra_params: dict[str, Any], request_files: MultiValueDict
@@ -315,16 +500,6 @@ class ProductAdmin(ImportableExportableAdmin):
                 )
             )
         elif 'xlsx_file' in request_files:
-            # if an xlsx file was sent this is a normal import and the shared
-            # logic can be called
-            wb = load_workbook(
-                request_files.get('xlsx_file'), data_only=True, read_only=True
-            )
-            columns = [c.value for c in next(wb.active.iter_rows(min_row=1, max_row=1))]
-
-            if 'product_quantity' not in columns:
-                raise Exception(_('product_quantity column is required'))
-
             return super().import_parse_and_save_xlsx_data(extra_params, request_files)
         else:
             # if only other files were sent this is an image-only import
@@ -497,31 +672,6 @@ class ProductAdmin(ImportableExportableAdmin):
         obj.clean()
         super().save_model(request, obj, form, change)
 
-    def changeform_view(self, request, object_id=None, form_url='', extra_context=None):
-        form_class = self.get_form(request)
-        instance = self.get_object(request, object_id) if object_id else None
-
-        form = form_class(instance=instance)
-
-        sku_choices = getattr(form, 'sku_choices', [])
-        products = getattr(form, 'products', [])
-        try:
-            sku_choices_json = json.dumps(sku_choices)
-            products_json = json.dumps(products)
-        except (TypeError, OverflowError):
-            sku_choices_json = '[]'
-            products_json = '[]'
-
-        extra_context = extra_context or {}
-        extra_context['sku_choices'] = sku_choices_json
-        extra_context['products'] = products_json
-        extra_context['supplier_brands'] = json.dumps(
-            list(Supplier.objects.all().values('id', 'brands__id', 'brands__name')))
-
-        return super().changeform_view(
-            request, object_id, form_url, extra_context=extra_context
-        )
-
     def active_campaigns(self, obj):
         campaign_ids = EmployeeGroupCampaignProduct.objects.filter(
             product_id=obj
@@ -532,10 +682,52 @@ class ProductAdmin(ImportableExportableAdmin):
         active_campaign_str = ', '.join(campaigns)
         return active_campaign_str
 
+    def changelist_view(self, request, extra_context=None):
+        products = Product.objects.annotate(
+            remaining_quantity_db=models.F('product_quantity')
+            - models.Sum('employeegroupcampaignproduct__orderproduct__quantity')
+        ).filter(remaining_quantity_db__lte=settings.STOCK_LIMIT_THRESHOLD)
+        if len(products):
+            self.message_user(
+                request,
+                (
+                    'The following products reached the'
+                    ' stock threshold :'
+                    f' {",".join(list(products.values_list("name", flat=True)))}'
+                ),
+                messages.WARNING,
+            )
+
+        alert_products = products.filter(alert_stock_sent=False).all()
+        if len(alert_products) > 0:
+            send_email_response = send_stock_alert_email(
+                settings.DEFAULT_FROM_EMAIL,
+                ','.join(list(products.values_list('name', flat=True))),
+            )
+            if send_email_response:
+                alert_products.update(alert_stock_sent=True)
+        return super().changelist_view(request, extra_context)
+
+
+class CategoryProductInline(admin.TabularInline):
+    model = CategoryProduct
+    extra = 0
+    fields = ['product_id']
+    readonly_fields = ['product_id']
+    show_change_link = True
+    can_delete = False
+    template = 'inventory/category_product_inline.html'
+
+    def has_add_permission(self, request, obj):
+        return False
+
 
 @admin.register(Category)
 class CategoryAdmin(TranslationAdmin):
     list_display = ('name',)
+
+    def get_inlines(self, request, obj):
+        return [CategoryProductInline] if obj else []
 
 
 @admin.register(Tag)

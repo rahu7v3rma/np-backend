@@ -1,6 +1,9 @@
 from rest_framework.serializers import ModelSerializer
 
-from .models import PurchaseOrder, PurchaseOrderProduct
+from .models import (
+    PurchaseOrder,
+    PurchaseOrderProduct,
+)
 
 
 class PurchaseOrderProductSerializer(ModelSerializer):

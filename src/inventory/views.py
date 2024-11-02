@@ -20,6 +20,7 @@ from .serializers import (
     GetSupplierSerializer,
     ProductGetSerializer,
     ProductSerializer,
+    ProductSkuSearchSerializer,
     SupplierSerializer,
 )
 
@@ -176,9 +177,7 @@ class SupplierProductsView(APIView):
                 },
                 status=status.HTTP_404_NOT_FOUND,
             )
-        serializer = ProductSerializer(
-            supplier.supplier_products.filter(active=True).all(), many=True
-        )
+        serializer = ProductSerializer(supplier.supplier_products.all(), many=True)
 
         return Response(
             {
@@ -186,6 +185,44 @@ class SupplierProductsView(APIView):
                 'message': 'Products fetched successfully.',
                 'status': status.HTTP_200_OK,
                 'data': serializer.data,
+            },
+            status=status.HTTP_200_OK,
+        )
+
+
+class ProductSkuSearchView(APIView):
+    authentication_classes = [SessionAuthentication]
+
+    def get(self, request):
+        request_serializer = ProductSkuSearchSerializer(data=request.GET)
+        if not request_serializer.is_valid():
+            return Response(
+                {
+                    'success': False,
+                    'message': 'Request is invalid.',
+                    'code': 'request_invalid',
+                    'status': status.HTTP_400_BAD_REQUEST,
+                    'data': request_serializer.errors,
+                },
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        query = request_serializer.validated_data.get('q')
+        skus = list(
+            Product.objects.exclude(
+                product_kind=Product.ProductKindEnum.BUNDLE.name,
+            )
+            .filter(
+                sku__icontains=query,
+            )[:20]
+            .values_list('sku', flat=True)
+        )
+        return Response(
+            {
+                'success': True,
+                'message': 'Products fetched successfully.',
+                'status': status.HTTP_200_OK,
+                'data': skus,
             },
             status=status.HTTP_200_OK,
         )

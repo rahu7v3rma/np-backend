@@ -2,13 +2,18 @@ from datetime import datetime, timezone
 import logging
 from time import time
 
+from django.conf import settings
 from django.core.paginator import Paginator
 from django.db.models import (
     Case,
     DecimalField,
+    ExpressionWrapper,
+    F,
+    IntegerField,
     OuterRef,
     Q,
     Subquery,
+    Sum,
     When,
 )
 from django.db.models.functions import Coalesce
@@ -35,6 +40,10 @@ from campaign.models import (
     OrderProduct,
     Organization,
     OrganizationProduct,
+    QuickOffer,
+    QuickOfferOrder,
+    QuickOfferOrderProduct,
+    QuickOfferSelectedProduct,
 )
 from campaign.serializers import (
     CampaignExchangeRequestSerializer,
@@ -49,14 +58,23 @@ from campaign.serializers import (
     EmployeeSerializer,
     EmployeeWithGroupSerializer,
     OrderSerializer,
+    OrganizationLoginSerializer,
     ProductSerializerCampaign,
     ProductSerializerCampaignAdmin,
+    QuickOfferProductSerializer,
+    QuickOfferProductsRequestSerializer,
+    QuickOfferProductsResponseSerializer,
+    QuickOfferSelectProductsDetailSerializer,
+    QuickOfferSelectProductsSerializer,
+    QuickOfferSerializer,
     ShareRequestSerializer,
 )
 from campaign.utils import (
     AdminPreviewAuthentication,
     EmployeeAuthentication,
     EmployeePermissions,
+    QuickOfferAuthentication,
+    QuickOfferPermissions,
     get_campaign_product_price,
     get_employee_admin_preview,
     get_employee_impersonated_by,
@@ -81,6 +99,10 @@ from payment.utils import initiate_payment
 from services.auth import jwt_encode
 from services.email import send_order_confirmation_email, send_otp_token_email
 from services.sms import send_otp_token_sms
+from src.campaign.serializers import (
+    QuickOfferProductRequestSerializer,
+    QuickOfferReadOnlySerializer, QuickOfferOrderRequestSerializer, QuickOfferOrderSerializer,
+)
 
 
 logger = logging.getLogger(__name__)
@@ -200,7 +222,10 @@ class CampaignEmployeeSelectionView(APIView):
 
         pending_orders = Order.objects.filter(
             campaign_employee_id__campaign=campaign,
-            status=Order.OrderStatusEnum.PENDING.name,
+            status__in=[
+                Order.OrderStatusEnum.PENDING.name,
+                Order.OrderStatusEnum.SENT_TO_LOGISTIC_CENTER.name,
+            ],
         )
 
         employees = campaign.employees.exclude(
@@ -1210,6 +1235,7 @@ class EmployeeOrderView(APIView):
                 'delivery_location': (
                     employee_group_campaign.employee_group.delivery_location
                 ),
+                'checkout_location': (employee_group_campaign.check_out_location),
             },
         )
 
@@ -1322,20 +1348,9 @@ class EmployeeOrderView(APIView):
         payment_description = []
 
         for idx, cart_product in enumerate(cart_products):
-            if (
-                cart_product.product_id.product_id.product_kind
-                == Product.ProductKindEnum.BUNDLE.name
-            ):
-                skus = str(cart_product.product_id.product_id.sku).split(',')
-                skus = [sku.strip() for sku in skus if sku.strip()]
-                products = EmployeeGroupCampaignProduct.objects.filter(
-                    employee_group_campaign_id=employee_group_campaign,
-                    product_id__sku__in=skus,
-                )
-            else:
-                products = [
-                    cart_product.product_id,
-                ]
+            products = [
+                cart_product.product_id,
+            ]
 
             for idx_1, product in enumerate(products):
                 employee_group_campaign_product = product
@@ -1371,6 +1386,22 @@ class EmployeeOrderView(APIView):
                 )
 
         amount_to_be_payed = order_price - employee_group_campaign.budget_per_employee
+
+        if (
+            amount_to_be_payed > 0
+            and employee_group_campaign.check_out_location
+            == EmployeeGroupCampaign.CheckoutLocationTypeEnum.GLOBAL.name
+        ):
+            return Response(
+                {
+                    'success': False,
+                    'message': f'Payment can not added in checkout location '
+                    f'"{EmployeeGroupCampaign.CheckoutLocationTypeEnum.GLOBAL.name}"',
+                    'status': status.HTTP_400_BAD_REQUEST,
+                    'data': {},
+                },
+                status=status.HTTP_400_BAD_REQUEST,
+            )
 
         employee_order.cost_from_budget = (
             employee_group_campaign.budget_per_employee
@@ -1703,6 +1734,830 @@ class GetCartProductsView(APIView):
                 'message': 'Cart fetched successfully',
                 'status': status.HTTP_200_OK,
                 'data': serializer.data,
+            },
+            status=status.HTTP_200_OK,
+        )
+
+
+class OrganizationQuickOfferView(APIView):
+    authentication_classes = [QuickOfferAuthentication]
+    permission_classes = [AllowAny]
+
+    @method_decorator(lang_decorator)
+    def get(self, request, quick_offer_code):
+        quick_offer_data = QuickOffer.objects.filter(code=quick_offer_code).first()
+        if (
+            not getattr(request.user, 'is_anonymous', False)
+            and request.quick_offer.code == quick_offer_code
+        ):
+            if request.quick_offer.status != QuickOffer.StatusEnum.ACTIVE.name:
+                return Response(
+                    {'detail': 'You do not have permission to perform this action.'},
+                    status=status.HTTP_403_FORBIDDEN,
+                )
+            serializer = QuickOfferSerializer(request.quick_offer)
+
+        else:
+            if quick_offer_data.status != QuickOffer.StatusEnum.ACTIVE.name:
+                return Response(
+                    {'detail': 'You do not have permission to perform this action.'},
+                    status=status.HTTP_403_FORBIDDEN,
+                )
+            serializer = QuickOfferReadOnlySerializer(quick_offer_data)
+
+        return Response(
+            {
+                'success': True,
+                'message': 'Offers fetched successfully',
+                'status': status.HTTP_200_OK,
+                'data': serializer.data,
+            },
+            status=status.HTTP_200_OK,
+        )
+
+
+class OrganizationQuickOfferLoginView(APIView):
+    permission_classes = [AllowAny]
+
+    def post(self, request, quick_offer_code):
+        try:
+            quick_offer = QuickOffer.objects.filter(code=quick_offer_code).first()
+
+            if (
+                not quick_offer
+                or quick_offer.status != QuickOffer.StatusEnum.ACTIVE.name
+            ):
+                return Response(
+                    {
+                        'success': False,
+                        'message': 'Bad credentials',
+                        'code': 'bad_credentials',
+                        'status': status.HTTP_401_UNAUTHORIZED,
+                        'data': {},
+                    },
+                    status=status.HTTP_401_UNAUTHORIZED,
+                )
+
+            serializer = OrganizationLoginSerializer(data=request.data)
+            if not serializer.is_valid():
+                return Response(
+                    {
+                        'success': False,
+                        'message': 'Request is invalid.',
+                        'code': 'request_invalid',
+                        'status': status.HTTP_400_BAD_REQUEST,
+                        'data': serializer.errors,
+                    },
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+
+            request = serializer.validated_data
+            request_auth_id = request.get('auth_id')
+            request_otp = request.get('otp')
+
+            if quick_offer.auth_method == QuickOffer.AuthMethodEnum.AUTH_ID.name:
+                if request_auth_id == quick_offer.auth_id:
+                    return Response(
+                        {
+                            'success': True,
+                            'message': 'Organization logged in successfully',
+                            'status': status.HTTP_200_OK,
+                            'data': {
+                                'auth_token': jwt_encode(
+                                    {'quick_offer_id': quick_offer.id}
+                                ),
+                            },
+                        },
+                        status=status.HTTP_200_OK,
+                    )
+                else:
+                    return Response(
+                        {
+                            'success': False,
+                            'message': 'Bad credentials',
+                            'code': 'bad_credentials',
+                            'status': status.HTTP_401_UNAUTHORIZED,
+                            'data': {},
+                        },
+                        status=status.HTTP_401_UNAUTHORIZED,
+                    )
+
+            if (
+                quick_offer.auth_method == QuickOffer.AuthMethodEnum.EMAIL.name
+                or quick_offer.auth_method
+                == QuickOffer.AuthMethodEnum.PHONE_NUMBER.name
+            ):
+                if request_otp:
+                    if quick_offer.verify_otp(request_otp):
+                        return Response(
+                            {
+                                'success': True,
+                                'message': 'Organization logged in successfully',
+                                'status': status.HTTP_200_OK,
+                                'data': {
+                                    'auth_token': jwt_encode(
+                                        {'quick_offer_id': quick_offer.id}
+                                    ),
+                                },
+                            },
+                            status=status.HTTP_200_OK,
+                        )
+                    else:
+                        return Response(
+                            {
+                                'success': False,
+                                'message': 'Bad credentials',
+                                'code': 'bad_credentials',
+                                'status': status.HTTP_401_UNAUTHORIZED,
+                                'data': {},
+                            },
+                            status=status.HTTP_401_UNAUTHORIZED,
+                        )
+
+                if quick_offer.auth_method == QuickOffer.AuthMethodEnum.EMAIL.name:
+                    send_otp_token_email(
+                        email=quick_offer.email, otp_token=quick_offer.generate_otp()
+                    )
+
+                if (
+                    quick_offer.auth_method
+                    == QuickOffer.AuthMethodEnum.PHONE_NUMBER.name
+                ):
+                    send_otp_token_sms(
+                        phone_number=quick_offer.phone_number,
+                        otp_token=quick_offer.generate_otp(),
+                    )
+
+                return Response(
+                    {
+                        'success': False,
+                        'code': 'missing_otp',
+                        'message': 'Missing OTP code',
+                        'status': status.HTTP_401_UNAUTHORIZED,
+                        'data': {},
+                    },
+                    status=status.HTTP_401_UNAUTHORIZED,
+                )
+
+            return Response(
+                {
+                    'success': False,
+                    'message': 'Bad credentials',
+                    'code': 'bad_credentials',
+                    'status': status.HTTP_401_UNAUTHORIZED,
+                    'data': {},
+                },
+                status=status.HTTP_401_UNAUTHORIZED,
+            )
+        except Exception as ex:
+            logger.error(f'Organization login error: {str(ex)}')
+            return Response(
+                {
+                    'success': False,
+                    'message': 'Unknown error occured',
+                    'status': status.HTTP_500_INTERNAL_SERVER_ERROR,
+                    'data': {},
+                },
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            )
+
+
+class ValidateCodeView(APIView):
+    permission_classes = [AllowAny]
+
+    def get(self, request, code):
+        campaign = Campaign.objects.filter(
+            code=code, status=Campaign.CampaignStatusEnum.ACTIVE.name
+        ).exists()
+
+        if campaign:
+            return Response(
+                {
+                    'success': True,
+                    'message': 'Campaign code exists',
+                    'status': status.HTTP_200_OK,
+                    'data': 'campaign_code',
+                },
+                status=status.HTTP_200_OK,
+            )
+
+        quick_offer = QuickOffer.objects.filter(
+            code=code, status=QuickOffer.StatusEnum.ACTIVE.name
+        ).exists()
+
+        if quick_offer:
+            return Response(
+                {
+                    'success': True,
+                    'message': 'Quick offer code exists',
+                    'status': status.HTTP_200_OK,
+                    'data': 'quick_offer_code',
+                },
+                status=status.HTTP_200_OK,
+            )
+
+        return Response(
+            {
+                'success': False,
+                'message': 'Invalid Code',
+                'status': status.HTTP_400_BAD_REQUEST,
+                'data': 'invalid_code',
+            },
+            status=status.HTTP_400_BAD_REQUEST,
+        )
+
+
+class QuickOfferProductsView(APIView):
+    authentication_classes = [QuickOfferAuthentication]
+    permission_classes = [QuickOfferPermissions]
+
+    @method_decorator(lang_decorator)
+    def get(self, request):
+        quick_offer: QuickOffer = request.quick_offer
+
+        request_serializer = QuickOfferProductsRequestSerializer(data=request.GET)
+        if not request_serializer.is_valid():
+            return Response(
+                {
+                    'success': False,
+                    'message': 'Request is invalid.',
+                    'code': 'request_invalid',
+                    'status': status.HTTP_400_BAD_REQUEST,
+                    'data': request_serializer.errors,
+                },
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        request_limit = request_serializer.validated_data.get('limit', 10)
+        request_page = request_serializer.validated_data.get('page', 1)
+        request_category_id = request_serializer.validated_data.get('category_id', None)
+        request_q = request_serializer.validated_data.get('q', None)
+
+        request_including_tax = request_serializer.validated_data.get(
+            'including_tax', True
+        )
+        try:
+            tax_amount = int(settings.TAX_AMOUNT)
+        except ValueError:
+            tax_amount = 0
+        tax_amount = tax_amount if not request_including_tax and tax_amount else 0
+
+        products = quick_offer.products.all()
+
+        if request_category_id:
+            products = products.filter(categories__id=request_category_id)
+
+        if request_q:
+            products = products.filter(
+                Q(name_en__icontains=request_q) | Q(name_he__icontains=request_q)
+            )
+
+        total_count = products.count()
+
+        products = products.order_by('id')
+
+        paginator = Paginator(products, request_limit)
+        page = paginator.get_page(request_page)
+
+        products_serializer = QuickOfferProductsResponseSerializer(
+            page,
+            many=True,
+            context={'quick_offer': quick_offer, 'tax_amount': tax_amount},
+        )
+
+        return Response(
+            {
+                'success': True,
+                'message': 'Quick offer products fetched successfully.',
+                'status': status.HTTP_200_OK,
+                'data': {
+                    'page_data': products_serializer.data,
+                    'page_num': page.number,
+                    'has_more': page.has_next(),
+                    'total_count': total_count,
+                },
+            },
+            status=status.HTTP_200_OK,
+        )
+
+
+class QuickOfferProductView(APIView):
+    authentication_classes = [QuickOfferAuthentication]
+    permission_classes = [QuickOfferPermissions]
+
+    @method_decorator(lang_decorator)
+    def get(self, request, product_id):
+        quick_offer: QuickOffer = request.quick_offer
+
+        request_serializer = QuickOfferProductRequestSerializer(data=request.GET)
+        if not request_serializer.is_valid():
+            return Response(
+                {
+                    'success': False,
+                    'message': 'Request is invalid.',
+                    'code': 'request_invalid',
+                    'status': status.HTTP_400_BAD_REQUEST,
+                    'data': request_serializer.errors,
+                },
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        product = quick_offer.products.filter(id=product_id).first()
+        if not product:
+            return Response(
+                {
+                    'success': False,
+                    'message': 'Product not found.',
+                    'code': 'not_found',
+                    'status': status.HTTP_404_NOT_FOUND,
+                    'data': {},
+                },
+                status=status.HTTP_404_NOT_FOUND,
+            )
+        request_including_tax = request_serializer.validated_data.get(
+            'including_tax', True
+        )
+        try:
+            tax_amount = int(settings.TAX_AMOUNT)
+        except ValueError:
+            tax_amount = 0
+        tax_amount = tax_amount if not request_including_tax and tax_amount else 0
+        serializer = QuickOfferProductSerializer(
+            product, context={'quick_offer': quick_offer, 'tax_amount': tax_amount}
+        )
+        return Response(
+            {
+                'success': True,
+                'message': 'Product fetched successfully.',
+                'status': status.HTTP_200_OK,
+                'data': serializer.data,
+            },
+            status=status.HTTP_200_OK,
+        )
+
+
+class QuickOfferSelectProductsView(APIView):
+    authentication_classes = [QuickOfferAuthentication]
+    permission_classes = [QuickOfferPermissions]
+
+    def post(self, request):
+        quick_offer: QuickOffer = request.quick_offer
+
+        serializer = QuickOfferSelectProductsSerializer(data=request.data)
+        if not serializer.is_valid():
+            return Response(
+                {
+                    'success': False,
+                    'message': 'Request is invalid.',
+                    'code': 'request_invalid',
+                    'status': status.HTTP_400_BAD_REQUEST,
+                    'data': serializer.errors,
+                },
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        product_id = serializer.validated_data.get('product_id')
+        quantity = serializer.validated_data.get('quantity')
+
+        if not quick_offer.products.filter(id=product_id).exists():
+            return Response(
+                {
+                    'success': False,
+                    'message': 'Product not found.',
+                    'code': 'not_found',
+                    'status': status.HTTP_404_NOT_FOUND,
+                    'data': {},
+                },
+                status=status.HTTP_404_NOT_FOUND,
+            )
+
+        QuickOfferSelectedProduct.objects.update_or_create(
+            product=Product.objects.get(id=product_id),
+            quick_offer=quick_offer,
+            defaults={'quantity': quantity},
+        )
+
+        return Response(
+            {
+                'success': True,
+                'message': 'Product selected successfully with quantity.',
+                'status': status.HTTP_200_OK,
+                'data': {},
+            },
+            status=status.HTTP_200_OK,
+        )
+
+
+class GetQuickOfferSelectProductsView(APIView):
+    authentication_classes = [QuickOfferAuthentication]
+    permission_classes = [QuickOfferPermissions]
+
+    @method_decorator(lang_decorator)
+    def get(self, request):
+        request_serializer = QuickOfferProductRequestSerializer(data=request.GET)
+        if not request_serializer.is_valid():
+            return Response(
+                {
+                    'success': False,
+                    'message': 'Request is invalid.',
+                    'code': 'request_invalid',
+                    'status': status.HTTP_400_BAD_REQUEST,
+                    'data': request_serializer.errors,
+                },
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        request_including_tax = request_serializer.validated_data.get(
+            'including_tax', True
+        )
+        try:
+            tax_amount = int(settings.TAX_AMOUNT)
+        except ValueError:
+            tax_amount = 0
+        tax_amount = tax_amount if not request_including_tax and tax_amount else 0
+        quick_offer: QuickOffer = request.quick_offer
+        selected_quick_offer = QuickOfferSelectedProduct.objects.filter(
+            quick_offer=quick_offer, quantity__gt=0
+        ).all()
+        serializer = QuickOfferSelectProductsDetailSerializer(
+            selected_quick_offer,
+            many=True,
+            context={'quick_offer': quick_offer, 'tax_amount': tax_amount},
+        )
+        return Response(
+            {
+                'success': True,
+                'message': 'Selected Product fetched successfully.',
+                'status': status.HTTP_200_OK,
+                'data': {
+                    'products': serializer.data,
+                },
+            },
+            status=status.HTTP_200_OK,
+        )
+
+
+class QuickOfferCategoriesView(APIView):
+    authentication_classes = [QuickOfferAuthentication]
+    permission_classes = [QuickOfferPermissions]
+
+    @method_decorator(lang_decorator)
+    def get(self, request):
+        quick_offer: QuickOffer = request.quick_offer
+        product_ids = quick_offer.products.all().values_list('id', flat=True)
+        categories_id = CategoryProduct.objects.filter(
+            product_id__in=product_ids
+        ).values_list('category_id', flat=True)
+        categories = Category.objects.filter(id__in=categories_id)
+        serialized_categories = CategorySerializer(categories, many=True).data
+
+        return Response(
+            {
+                'success': True,
+                'message': 'Categories fetched successfully.',
+                'code': 'categories_fetched',
+                'status': status.HTTP_200_OK,
+                'data': {'categories': serialized_categories},
+            },
+            status=status.HTTP_200_OK,
+        )
+
+
+class QuickOfferShareView(APIView):
+    authentication_classes = [QuickOfferAuthentication]
+    permission_classes = [QuickOfferPermissions]
+    serializer = ShareRequestSerializer
+
+    @method_decorator(lang_decorator)
+    def post(self, request):
+        serializer = ShareRequestSerializer(data=request.data)
+        quick_offer = request.quick_offer
+        if not serializer.is_valid():
+            return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+
+        product_ids = serializer.data.get('product_ids')
+        share_type = serializer.data.get('share_type')
+
+        if not isinstance(product_ids, list):
+            return Response(
+                {
+                    'success': False,
+                    'message': 'Request is invalid.',
+                    'code': 'request_invalid',
+                    'status': status.HTTP_400_BAD_REQUEST,
+                    'data': {'product_ids': ['A valid list of integers is required.']},
+                },
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        valid_share_types = [choice.value for choice in ShareTypeEnum]
+        if share_type not in valid_share_types:
+            return Response(
+                {
+                    'success': False,
+                    'message': 'Invalid share type provided.',
+                    'code': 'invalid_share_type',
+                    'status': status.HTTP_400_BAD_REQUEST,
+                },
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        if share_type == ShareTypeEnum.Cart.value:
+            selected_products = QuickOfferSelectedProduct.objects.filter(
+                quick_offer=quick_offer, quantity__gt=0
+            )
+        else:
+            selected_products = QuickOfferSelectedProduct.objects.filter(
+                quick_offer=quick_offer, product__id__in=product_ids
+            )
+        if not selected_products.exists():
+            return Response(
+                {
+                    'success': False,
+                    'message': 'No Products Selected.',
+                    'code': 'no_products_selected',
+                    'status': status.HTTP_400_BAD_REQUEST,
+                },
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        # Create Share object
+        share = Share.objects.create(
+            share_type=share_type,
+            quick_offer=quick_offer,
+        )
+        share.products.set(selected_products.values_list('product', flat=True))
+
+        return Response(
+            {
+                'success': True,
+                'message': 'Products shared successfully.',
+                'status': status.HTTP_200_OK,
+                'data': {
+                    'share_id': share.share_id,
+                },
+            },
+            status=status.HTTP_200_OK,
+        )
+
+
+class GetQuickOfferShareView(APIView):
+    permission_classes = [AllowAny]
+
+    @method_decorator(lang_decorator)
+    def get(self, request, share_id):
+        request_serializer = QuickOfferProductRequestSerializer(data=request.GET)
+        if not request_serializer.is_valid():
+            return Response(
+                {
+                    'success': False,
+                    'message': 'Request is invalid.',
+                    'code': 'request_invalid',
+                    'status': status.HTTP_400_BAD_REQUEST,
+                    'data': request_serializer.errors,
+                },
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        try:
+            share = Share.objects.get(share_id=share_id)
+        except Share.DoesNotExist:
+            return Response(
+                {
+                    'success': False,
+                    'message': 'Share not found.',
+                    'code': 'not_found',
+                    'status': status.HTTP_404_NOT_FOUND,
+                },
+                status=status.HTTP_404_NOT_FOUND,
+            )
+        response_data = {
+            'share_type': share.share_type,
+            'products': [],
+            'cart': [],
+        }
+        request_including_tax = request_serializer.validated_data.get(
+            'including_tax', True
+        )
+        try:
+            tax_amount = int(settings.TAX_AMOUNT)
+        except ValueError:
+            tax_amount = 0
+        tax_amount = tax_amount if not request_including_tax and tax_amount else 0
+        if share.share_type == ShareTypeEnum.Product.value:
+            product_shares = share.products.all()
+            response_data['products'] = QuickOfferProductSerializer(
+                product_shares,
+                many=True,
+                context={'quick_offer': share.quick_offer, 'tax_amount': tax_amount},
+            ).data
+
+        elif share.share_type == ShareTypeEnum.Cart.value:
+            try:
+                quick_offer = share.quick_offer
+                products = quick_offer.selected_products.all()
+                selected_products = QuickOfferSelectedProduct.objects.filter(
+                    quick_offer=quick_offer, product__id__in=products
+                )
+
+                response_data['cart'] = QuickOfferSelectProductsDetailSerializer(
+                    selected_products,
+                    many=True,
+                    context={'quick_offer': quick_offer, 'tax_amount': tax_amount},
+                ).data
+
+            except (Cart.DoesNotExist, AttributeError):
+                return Response(
+                    {
+                        'success': False,
+                        'message': 'Cart not found.',
+                        'code': 'not_found',
+                        'status': status.HTTP_404_NOT_FOUND,
+                    },
+                    status=status.HTTP_404_NOT_FOUND,
+                )
+
+        return Response(
+            {
+                'success': True,
+                'message': 'Share details fetched successfully.',
+                'status': status.HTTP_200_OK,
+                'data': response_data,
+            },
+            status=status.HTTP_200_OK,
+        )
+
+
+class QuickOfferOrderView(APIView):
+    authentication_classes = [QuickOfferAuthentication]
+    permission_classes = [QuickOfferPermissions]
+
+    def post(self, request):
+        quick_offer = request.quick_offer
+
+        request_data = QuickOfferOrderRequestSerializer(
+            data=request.data
+        )
+        if not request_data.is_valid():
+            return Response(
+                {
+                    'success': False,
+                    'message': 'Request is invalid.',
+                    'code': 'request_invalid',
+                    'status': status.HTTP_400_BAD_REQUEST,
+                    'data': request_data.errors,
+                },
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        request_order_data = request_data.validated_data
+
+        selected_products = QuickOfferSelectedProduct.objects.filter(quick_offer=request.quick_offer)
+
+        if len(selected_products) == 0:
+            return Response(
+                {
+                    'success': False,
+                    'message': 'Empty cart.',
+                    'code': 'not_found',
+                    'status': status.HTTP_404_NOT_FOUND,
+                    'data': {},
+                },
+                status=status.HTTP_404_NOT_FOUND,
+            )
+
+        # check if all the products are available
+        for selected_product in selected_products:
+            remaining_quantity = selected_product.product.remaining_quantity
+            if remaining_quantity < selected_product.quantity:
+                return Response(
+                    {
+                        'success': False,
+                        'message': gettext(
+                            (
+                                'The requested quantity is not available. '
+                                'The remaining quantity is %(remaining_quantity)d.'
+                            )
+                        )
+                                   % {'remaining_quantity': remaining_quantity},
+                        'code': 'request_invalid',
+                        'status': status.HTTP_400_BAD_REQUEST,
+                        'data': request_data.errors,
+                    },
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+
+        # check if there is already a pending order, and if so fail
+        existing_order = QuickOfferOrder.objects.filter(
+            quick_offer=quick_offer,
+            status=QuickOfferOrder.OrderStatusEnum.PENDING,
+        ).first()
+
+        if existing_order:
+            return Response(
+                {
+                    'success': False,
+                    'message': 'Quick Offer already ordered.',
+                    'code': 'already_ordered',
+                    'status': status.HTTP_400_BAD_REQUEST,
+                    'data': {},
+                },
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        order = QuickOfferOrder.objects.create(**request_order_data, quick_offer=quick_offer)
+
+        for idx, selected_product in enumerate(selected_products):
+            QuickOfferOrderProduct.objects.create(
+                quick_offer_order=order,
+                product_id=selected_product.product,
+                quantity=selected_product.quantity,
+            )
+
+        return Response(
+            {
+                'success': True,
+                'message': 'Order placed successfully.',
+                'status': status.HTTP_200_OK,
+                'data': {'reference': order.reference},
+            },
+            status=status.HTTP_200_OK,
+        )
+
+
+    @method_decorator(lang_decorator)
+    def get(self, request):
+        quick_offer = request.quick_offer
+
+        order = QuickOfferOrder.objects.filter(
+            quick_offer=quick_offer,
+            status=QuickOfferOrder.OrderStatusEnum.PENDING,
+        ).first()
+
+        if not order:
+            return Response(
+                {
+                    'success': False,
+                    'message': 'Order not found.',
+                    'code': 'not_found',
+                    'status': status.HTTP_404_NOT_FOUND,
+                    'data': {},
+                },
+                status=status.HTTP_404_NOT_FOUND,
+            )
+
+        order_serializer = QuickOfferOrderSerializer(
+            order,
+            context={
+                'quick_offer': quick_offer,
+            },
+        )
+
+        return Response(
+            {
+                'success': True,
+                'message': 'Quick offer order fetched successfully.',
+                'status': status.HTTP_200_OK,
+                'data': order_serializer.data,
+            },
+            status=status.HTTP_200_OK,
+        )
+
+
+class QuickOfferCancelOrderView(APIView):
+    authentication_classes = [QuickOfferAuthentication]
+    permission_classes = [QuickOfferPermissions]
+
+    def put(self, request, order_id):
+        quick_offer = request.quick_offer
+
+        order = QuickOfferOrder.objects.filter(
+            pk=order_id,
+            quick_offer=quick_offer,
+            status=QuickOfferOrder.OrderStatusEnum.PENDING,
+        ).first()
+
+        # order not found
+        if not order:
+            return Response(
+                {
+                    'success': False,
+                    'message': 'Order not found.',
+                    'code': 'not_found',
+                    'status': status.HTTP_404_NOT_FOUND,
+                    'data': {},
+                },
+                status=status.HTTP_404_NOT_FOUND,
+            )
+
+        order.status = Order.OrderStatusEnum.CANCELLED
+        order.save()
+
+        QuickOfferSelectedProduct.objects.filter(quick_offer=request.quick_offer).delete()
+
+        return Response(
+            {
+                'success': True,
+                'message': 'order canceled successfully.',
+                'status': status.HTTP_200_OK,
+                'data': {},
             },
             status=status.HTTP_200_OK,
         )

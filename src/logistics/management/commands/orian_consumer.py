@@ -35,6 +35,8 @@ class Command(BaseCommand):
             virtual_host=settings.ORIAN_RABBITMQ_VIRTUAL_HOST,
             credentials=connection_credentials,
             ssl_options=pika.SSLOptions(context=ssl_context),
+            # ensure dead connections are not kept alive on the server's end
+            heartbeat=120,
         )
 
         connection = pika.SelectConnection(

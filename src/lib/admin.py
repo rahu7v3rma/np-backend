@@ -2,7 +2,7 @@ from datetime import datetime
 from typing import Any
 
 from django import forms
-from django.contrib import messages
+from django.contrib import admin, messages
 from django.core.exceptions import ValidationError
 from django.db import models, transaction
 from django.http import HttpResponse
@@ -29,6 +29,8 @@ class ImportableExportableAdmin(TranslationAdmin):
     import_related_fields: set[str] = ()
     import_multiple_value_splitter: str = '|||'
     export_fields: set[str] = ()
+    import_excluded_fields: set[str] = ()
+    import_excluded_fields_indexes: list = []
 
     def get_urls(self):
         """
@@ -106,8 +108,11 @@ class ImportableExportableAdmin(TranslationAdmin):
         for row in worksheet.iter_rows(
             max_row=1, max_col=worksheet.max_column, values_only=True
         ):
-            for cell_value in row:
+            for cell_idx, cell_value in enumerate(row):
                 if cell_value:
+                    if cell_value in self.import_excluded_fields:
+                        self.import_excluded_fields_indexes.append(cell_idx)
+                        continue
                     columns.append(cell_value)
                 else:
                     break
@@ -136,10 +141,17 @@ class ImportableExportableAdmin(TranslationAdmin):
             record_field_multi_values = {}
 
             try:
+                shift = 0
                 for col_idx, current_column in enumerate(columns):
+                    if col_idx in self.import_excluded_fields_indexes:
+                        shift += 1
+
                     if current_column not in self.import_related_fields:
                         parsed_value = self.import_parse_field(
-                            current_column, row[col_idx], extra_params, request_files
+                            current_column,
+                            row[col_idx + shift],
+                            extra_params,
+                            request_files,
                         )
                         record_field_values[current_column] = parsed_value
 
@@ -148,12 +160,20 @@ class ImportableExportableAdmin(TranslationAdmin):
 
                 if record_pk:
                     # update existing record
-                    record = self.model.objects.get(pk=record_pk)
-                    for k, v in record_field_values.items():
-                        setattr(record, k, v)
-                    record.save()
+                    try:
+                        record = self.model.objects.get(pk=record_pk)
+                        for k, v in record_field_values.items():
+                            setattr(record, k, v)
+                        record.save()
 
-                    records_updated += 1
+                        records_updated += 1
+                    # handle the case when the product is not found
+                    except self.model.DoesNotExist:
+                        record = self.model(**record_field_values)
+                        record.full_clean()
+                        record.save()
+
+                        records_created += 1
                 else:
                     # create record
                     record = self.model(**record_field_values)
@@ -229,6 +249,8 @@ class ImportableExportableAdmin(TranslationAdmin):
                 return datetime.fromisoformat(value).date() if value else None
         elif field_type == 'FloatField':
             return float(value) if value else None
+        elif field_type == 'FileField':
+            return value
 
         raise ValueError(f'Failed to parse unknown field type: {field_type}')
 
@@ -289,6 +311,13 @@ class ImportableExportableAdmin(TranslationAdmin):
                     else:
                         value = getattr(value, field_part)
 
+                # Handle ImageField specifically
+                if hasattr(value, 'url') and 'ImageField' in str(type(value)):
+                    if value:
+                        value = value.url
+                    else:
+                        value = ''  # or some default placeholder text
+
                 row.append(value)
 
             worksheet.append(row)
@@ -307,3 +336,13 @@ class RecordImportError(Exception):
         self.errors = errors
 
         super().__init__()
+
+
+def custom_titled_filter(title):
+    class Wrapper(admin.FieldListFilter):
+        def __new__(cls, *args, **kwargs):
+            instance = admin.FieldListFilter.create(*args, **kwargs)
+            instance.title = title
+            return instance
+
+    return Wrapper

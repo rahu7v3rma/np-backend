@@ -4,6 +4,9 @@ from unittest import mock
 
 from django.conf import settings
 from django.contrib.auth import get_user_model
+from django.db.models import (
+    Q,
+)
 from django.test import TestCase
 from django.utils import timezone as django_timezone
 from rest_framework import status
@@ -21,8 +24,18 @@ from campaign.models import (
     EmployeeGroupCampaign,
     EmployeeGroupCampaignProduct,
     Order,
+    OrderProduct,
     Organization,
     OrganizationProduct,
+    QuickOffer,
+    QuickOfferOrder,
+    QuickOfferOrderProduct,
+    QuickOfferSelectedProduct,
+)
+from campaign.serializers import (
+    QuickOfferProductSerializer,
+    QuickOfferSelectProductsDetailSerializer,
+    QuickOfferSerializer,
 )
 from inventory.models import (
     Brand,
@@ -35,6 +48,7 @@ from inventory.models import (
     Tag,
 )
 from services.auth import jwt_encode
+from src.campaign.serializers import QuickOfferReadOnlySerializer
 
 
 User = get_user_model()
@@ -116,6 +130,7 @@ class CampaignViewTestCase(TestCase):
             budget_per_employee=3000,
             product_selection_mode=EmployeeGroupCampaign.ProductSelectionTypeEnum.MULTIPLE.value,
             displayed_currency=EmployeeGroupCampaign.CurrencyTypeEnum.CURRENCY.value,
+            check_out_location=EmployeeGroupCampaign.CheckoutLocationTypeEnum.ISRAEL.value,
         )
         self.campaign_employee = CampaignEmployee.objects.create(
             campaign=self.campaign, employee=self.employee
@@ -159,6 +174,7 @@ class CampaignViewTestCase(TestCase):
             budget_per_employee=3000,
             product_selection_mode=EmployeeGroupCampaign.ProductSelectionTypeEnum.MULTIPLE.value,
             displayed_currency=EmployeeGroupCampaign.CurrencyTypeEnum.CURRENCY.value,
+            check_out_location=EmployeeGroupCampaign.CheckoutLocationTypeEnum.ISRAEL.value,
         )
         self.campaign_2_employee = CampaignEmployee.objects.create(
             campaign=self.campaign_2, employee=self.employee
@@ -246,6 +262,7 @@ class CampaignViewTestCase(TestCase):
                     'budget_per_employee': 3000,
                     'employee_order_reference': None,
                     'employee_name': 'employee_first_name employee_last_name',
+                    'check_out_location': 'Israel',
                 },
             },
         )
@@ -310,6 +327,7 @@ class CampaignViewTestCase(TestCase):
                     'budget_per_employee': 3000,
                     'employee_order_reference': None,
                     'employee_name': 'employee_first_name_he employee_last_name_he',
+                    'check_out_location': 'Israel',
                 },
             },
         )
@@ -826,7 +844,7 @@ class ProductViewTestCase(TestCase):
                     ],
                     'calculated_price': 14,
                     'extra_price': 5,
-                    'remaining_quantity': 0,
+                    'remaining_quantity': 2147483647,
                 },
             },
         )
@@ -2351,6 +2369,148 @@ class EmployeeOrderViewTestCase(TestCase):
             },
         )
 
+    def test_checkout_global_without_country_or_state_code_or_zip_code(self):
+        EmployeeGroupCampaign.objects.filter(pk='1').update(check_out_location='GLOBAL')
+
+        campaign_code = Campaign.objects.get(pk=1).code
+        response = self.client.post(
+            self.route.replace('{campaign_code}', campaign_code),
+            format='json',
+            data={
+                'full_name': 'First Last',
+                'phone_number': '0500000000',
+                'delivery_city': 'City name',
+                'delivery_street': 'Street name',
+                'delivery_street_number': 10,
+                'country': 'US',
+                'zip_code': '10000',
+            },
+        )
+        self.assertEqual(response.status_code, 400)
+        content = json.loads(response.content.decode(encoding='UTF-8'))
+        self.assertDictEqual(
+            content,
+            {
+                'success': False,
+                'message': 'Request is invalid.',
+                'code': 'request_invalid',
+                'status': 400,
+                'data': {'state_code': ['This field is required.']},
+            },
+        )
+
+        response = self.client.post(
+            self.route.replace('{campaign_code}', campaign_code),
+            format='json',
+            data={
+                'full_name': 'First Last',
+                'phone_number': '0500000000',
+                'delivery_city': 'City name',
+                'delivery_street': 'Street name',
+                'delivery_street_number': 10,
+                'country': 'US',
+                'state_code': '11',
+            },
+        )
+        self.assertEqual(response.status_code, 400)
+        content = json.loads(response.content.decode(encoding='UTF-8'))
+        self.assertDictEqual(
+            content,
+            {
+                'success': False,
+                'message': 'Request is invalid.',
+                'code': 'request_invalid',
+                'status': 400,
+                'data': {'zip_code': ['This field is required.']},
+            },
+        )
+
+        response = self.client.post(
+            self.route.replace('{campaign_code}', campaign_code),
+            format='json',
+            data={
+                'full_name': 'First Last',
+                'phone_number': '0500000000',
+                'delivery_city': 'City name',
+                'delivery_street': 'Street name',
+                'delivery_street_number': 10,
+                'state_code': '11',
+                'zip_code': '10000',
+            },
+        )
+        self.assertEqual(response.status_code, 400)
+        content = json.loads(response.content.decode(encoding='UTF-8'))
+        self.assertDictEqual(
+            content,
+            {
+                'success': False,
+                'message': 'Request is invalid.',
+                'code': 'request_invalid',
+                'status': 400,
+                'data': {'country': ['This field is required.']},
+            },
+        )
+
+    @mock.patch('requests.post')
+    def test_valid_checkout_global_request(self, mock_post):
+        EmployeeGroupCampaign.objects.filter(pk='1').update(
+            check_out_location='GLOBAL', budget_per_employee=5
+        )
+
+        mock_post.return_value = self._mock_response(
+            json_data={
+                'status': 1,
+                'data': {
+                    'processToken': 'token',
+                    'processId': 1234,
+                    'authCode': 'abcdefg1234',
+                },
+            }
+        )
+
+        campaign_code = Campaign.objects.get(pk=1).code
+        response = self.client.post(
+            self.route.replace('{campaign_code}', campaign_code),
+            format='json',
+            data={
+                'full_name': 'First Last',
+                'phone_number': '0500000000',
+                'delivery_city': 'City name',
+                'delivery_street': 'Street name',
+                'delivery_street_number': 10,
+                'country': 'US',
+                'state_code': '11',
+                'zip_code': '10000',
+                'color': 'white',
+                'size': 'L',
+            },
+        )
+        order = Order.objects.first()
+        self.assertEqual(order.country, 'US')
+        self.assertEqual(order.state_code, '11')
+        self.assertEqual(order.zip_code, '10000')
+        self.assertEqual(order.color, 'white')
+        self.assertEqual(order.size, 'L')
+        self.assertEqual(response.status_code, 200)
+        content = json.loads(response.content.decode(encoding='UTF-8'))
+        self.assertDictEqual(
+            content,
+            {
+                'success': True,
+                'message': 'Order placed successfully.',
+                'status': 200,
+                'data': {'reference': 1},
+            },
+        )
+        self.assertListEqual(
+            list(
+                Order.objects.first()
+                .orderproduct_set.all()
+                .values('product_id', 'quantity')
+            ),
+            [{'product_id': 1, 'quantity': 2}, {'product_id': 2, 'quantity': 3}],
+        )
+
     @mock.patch('requests.post')
     def test_request_cost_with_multiple_employee_group_budgets(self, mock_post):
         second_cart = Cart.objects.get(
@@ -3401,4 +3561,1405 @@ class GetShareDetailsViewTestCase(TestCase):
                     'displayed_currency': 'Coins',
                 },
             },
+        )
+
+
+class CampaignOffersViewTestCase(TestCase):
+    fixtures = [
+        'src/fixtures/inventory.json',
+        'src/fixtures/campaign.json',
+        'src/fixtures/quick_offers.json',
+    ]
+
+    def setUp(self):
+        self.route = '/campaign/quick-offer'
+        self.client = APIClient()
+        self.quick_offer = QuickOffer.objects.first()
+        self.auth_token = jwt_encode({'quick_offer_id': self.quick_offer.id})
+
+    def test_request_without_auth(self):
+        QuickOffer.objects.update(status='ACTIVE')
+        print(QuickOffer.objects.first().organization.logo_image)
+        print('print_logo_image')
+        self.quick_offer.refresh_from_db()
+        response = self.client.get(
+            f'{self.route}/{self.quick_offer.code}',
+        )
+        content = json.loads(response.content.decode(encoding='UTF-8'))
+        self.assertEqual(response.status_code, 200)
+        self.assertDictEqual(
+            content.get('data'),
+            QuickOfferReadOnlySerializer(self.quick_offer).data,
+        )
+
+    def test_request_not_active_offer(self):
+        QuickOffer.objects.update(status='PENDING')
+        response = self.client.get(
+            f'{self.route}/{QuickOffer.objects.first().code}',
+            HTTP_X_AUTHORIZATION=f'Bearer {self.auth_token}',
+        )
+        self.assertEqual(response.status_code, 403)
+        content = json.loads(response.content.decode(encoding='UTF-8'))
+        self.assertDictEqual(
+            content,
+            {'detail': 'You do not have permission to perform this action.'},
+        )
+
+    def test_request_valid_request(self):
+        QuickOffer.objects.update(status='ACTIVE')
+        self.quick_offer.refresh_from_db()
+        response = self.client.get(
+            f'{self.route}/{self.quick_offer.code}',
+            HTTP_X_AUTHORIZATION=f'Bearer {self.auth_token}',
+        )
+        content = json.loads(response.content.decode(encoding='UTF-8'))
+        self.assertEqual(response.status_code, 200)
+        self.assertDictEqual(
+            content.get('data'),
+            QuickOfferSerializer(self.quick_offer).data,
+        )
+
+
+class OrganizationQuickOfferLoginView(TestCase):
+    fixtures = [
+        'src/fixtures/inventory.json',
+        'src/fixtures/campaign.json',
+    ]
+
+    def setUp(self):
+        self.client = APIClient()
+        self.quick_offer = QuickOffer.objects.first()
+
+    def test_quick_offer_not_found(self):
+        response = self.client.post(
+            '/campaign/invalid_quick_offer_code/quick-offer-login'
+        )
+        self.assertEqual(response.status_code, 401)
+        self.assertDictEqual(
+            response.json(),
+            {
+                'success': False,
+                'message': 'Bad credentials',
+                'code': 'bad_credentials',
+                'status': 401,
+                'data': {},
+            },
+        )
+
+    def test_quick_offer_not_active(self):
+        self.quick_offer.status = QuickOffer.StatusEnum.PENDING.name
+        self.quick_offer.save()
+        response = self.client.post(
+            f'/campaign/{self.quick_offer.code}/quick-offer-login'
+        )
+        self.assertEqual(response.status_code, 401)
+        self.assertDictEqual(
+            response.json(),
+            {
+                'success': False,
+                'message': 'Bad credentials',
+                'code': 'bad_credentials',
+                'status': 401,
+                'data': {},
+            },
+        )
+
+    def test_invalid_auth_id(self):
+        self.quick_offer.auth_method = QuickOffer.AuthMethodEnum.AUTH_ID.name
+        self.quick_offer.save()
+        response = self.client.post(
+            f'/campaign/{self.quick_offer.code}/quick-offer-login',
+            format='json',
+            data={
+                'auth_id': 'invalid_auth_id',
+            },
+        )
+        self.assertEqual(response.status_code, 401)
+        self.assertDictEqual(
+            response.json(),
+            {
+                'success': False,
+                'message': 'Bad credentials',
+                'code': 'bad_credentials',
+                'status': 401,
+                'data': {},
+            },
+        )
+
+    def test_valid_auth_id(self):
+        self.quick_offer.auth_method = QuickOffer.AuthMethodEnum.AUTH_ID.name
+        self.quick_offer.save()
+        response = self.client.post(
+            f'/campaign/{self.quick_offer.code}/quick-offer-login',
+            format='json',
+            data={
+                'auth_id': self.quick_offer.auth_id,
+            },
+        )
+        self.assertEqual(response.status_code, 200)
+        self.assertDictEqual(
+            response.json(),
+            {
+                'success': True,
+                'message': 'Organization logged in successfully',
+                'status': 200,
+                'data': {
+                    'auth_token': jwt_encode({'quick_offer_id': self.quick_offer.pk}),
+                },
+            },
+        )
+
+    def test_invalid_otp(self):
+        response = self.client.post(
+            f'/campaign/{self.quick_offer.code}/quick-offer-login',
+            format='json',
+            data={'otp': 'invalid_otp'},
+        )
+        self.assertEqual(response.status_code, 401)
+        self.assertDictEqual(
+            response.json(),
+            {
+                'success': False,
+                'message': 'Bad credentials',
+                'code': 'bad_credentials',
+                'status': 401,
+                'data': {},
+            },
+        )
+
+    @mock.patch('campaign.views.send_otp_token_email')
+    def test_email(self, mock_send_otp_token_email):
+        self.quick_offer.auth_method = QuickOffer.AuthMethodEnum.EMAIL.name
+        self.quick_offer.save()
+        response = self.client.post(
+            f'/campaign/{self.quick_offer.code}/quick-offer-login',
+        )
+        self.assertEqual(response.status_code, 401)
+        self.assertDictEqual(
+            response.json(),
+            {
+                'success': False,
+                'message': 'Missing OTP code',
+                'code': 'missing_otp',
+                'status': 401,
+                'data': {},
+            },
+        )
+        mock_send_otp_token_email.assert_called()
+        _, kwargs = mock_send_otp_token_email.call_args
+        self.quick_offer.refresh_from_db()
+        self.assertEqual(kwargs['email'], self.quick_offer.email)
+        otp = kwargs['otp_token']
+        response = self.client.post(
+            f'/campaign/{self.quick_offer.code}/quick-offer-login',
+            format='json',
+            data={'otp': otp},
+        )
+        self.assertEqual(response.status_code, 200)
+        self.assertDictEqual(
+            response.json(),
+            {
+                'success': True,
+                'message': 'Organization logged in successfully',
+                'status': 200,
+                'data': {
+                    'auth_token': jwt_encode({'quick_offer_id': self.quick_offer.pk}),
+                },
+            },
+        )
+
+    @mock.patch('campaign.views.send_otp_token_sms')
+    def test_phone_number(self, mock_send_otp_token_sms):
+        self.quick_offer.auth_method = QuickOffer.AuthMethodEnum.PHONE_NUMBER.name
+        self.quick_offer.save()
+        response = self.client.post(
+            f'/campaign/{self.quick_offer.code}/quick-offer-login',
+        )
+        self.assertEqual(response.status_code, 401)
+        self.assertDictEqual(
+            response.json(),
+            {
+                'success': False,
+                'message': 'Missing OTP code',
+                'code': 'missing_otp',
+                'status': 401,
+                'data': {},
+            },
+        )
+        mock_send_otp_token_sms.assert_called()
+        _, kwargs = mock_send_otp_token_sms.call_args
+        self.quick_offer.refresh_from_db()
+        self.assertEqual(kwargs['phone_number'], self.quick_offer.phone_number)
+        otp = kwargs['otp_token']
+        response = self.client.post(
+            f'/campaign/{self.quick_offer.code}/quick-offer-login',
+            format='json',
+            data={'otp': otp},
+        )
+        self.assertEqual(response.status_code, 200)
+        self.assertDictEqual(
+            response.json(),
+            {
+                'success': True,
+                'message': 'Organization logged in successfully',
+                'status': 200,
+                'data': {
+                    'auth_token': jwt_encode({'quick_offer_id': self.quick_offer.pk}),
+                },
+            },
+        )
+
+
+class CodeValidationViewTests(TestCase):
+    def setUp(self):
+        self.route = '/campaign/validate/{}'
+        self.client = APIClient()
+
+        self.organization = Organization.objects.create(
+            name='name en',
+            name_he='name he',
+            manager_full_name='test',
+            manager_phone_number='086786',
+            manager_email='info@gmail.com',
+        )
+        self.campaign = Campaign.objects.create(
+            organization=self.organization,
+            name='campaign name',
+            name_he='campaign name he',
+            start_date_time=django_timezone.now(),
+            end_date_time=django_timezone.now() + django_timezone.timedelta(hours=1),
+            status=Campaign.CampaignStatusEnum.ACTIVE.name,
+            login_page_title='en',
+            login_page_title_he='he',
+            login_page_subtitle='en',
+            login_page_subtitle_he='he',
+            main_page_first_banner_title='en',
+            main_page_first_banner_title_he='he',
+            main_page_first_banner_subtitle='en',
+            main_page_first_banner_subtitle_he='he',
+            main_page_first_banner_image='image',
+            main_page_first_banner_mobile_image='mobile_image',
+            main_page_second_banner_title='en',
+            main_page_second_banner_title_he='he',
+            main_page_second_banner_subtitle='en',
+            main_page_second_banner_subtitle_he='he',
+            main_page_second_banner_background_color='#123456',
+            main_page_second_banner_text_color='WHITE',
+            sms_sender_name='sender',
+            sms_welcome_text='en',
+            sms_welcome_text_he='he',
+            email_welcome_text='en',
+            email_welcome_text_he='he',
+        )
+        self.quick_offer = QuickOffer.objects.create(
+            organization=self.organization,
+            name='Test Quick Offer',
+            code='TEST_QO',
+            quick_offer_type=QuickOffer.TypeEnum.EVENT.name,
+            ship_to=QuickOffer.ShippingEnum.TO_OFFICE.name,
+            status=QuickOffer.StatusEnum.ACTIVE.name,
+            login_page_title='Test Login Page',
+            login_page_subtitle='Welcome to the Test Quick Offer!',
+            main_page_first_banner_title='Welcome to Our Quick Offer',
+            main_page_first_banner_subtitle='Check out our amazing offers!',
+            main_page_first_banner_image='default-banner.png',
+            main_page_first_banner_mobile_image='default-banner.png',
+            main_page_second_banner_title='Special Deals',
+            main_page_second_banner_subtitle='Don’t miss out!',
+            main_page_second_banner_background_color='#C1E0CE',
+            main_page_second_banner_text_color='BLACK',
+            sms_sender_name='TestSender',
+            sms_welcome_text='Welcome to the Quick Offer!',
+            email_welcome_text='Thank you for choosing our Quick Offer!',
+            auth_method=QuickOffer.AuthMethodEnum.EMAIL.name,
+            auth_id='test_auth_id',
+            phone_number='1234567890',
+            email='test@example.com',
+            nicklas_status=QuickOffer.NicklasStatusEnum.WAITING_TO_CLIENT.name,
+            client_status=QuickOffer.ClientStatusEnum.READY_TO_CHECK.name,
+            last_login=django_timezone.now(),
+            otp_secret=None,
+        )
+
+    def test_valid_campaign_code(self):
+        response = self.client.get(self.route.format(self.campaign.code))
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertDictEqual(
+            response.json(),
+            {
+                'success': True,
+                'message': 'Campaign code exists',
+                'status': 200,
+                'data': 'campaign_code',
+            },
+        )
+
+    def test_valid_quick_offer_code(self):
+        response = self.client.get(self.route.format(self.quick_offer.code))
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertDictEqual(
+            response.json(),
+            {
+                'success': True,
+                'message': 'Quick offer code exists',
+                'status': 200,
+                'data': 'quick_offer_code',
+            },
+        )
+
+    def test_invalid_code(self):
+        response = self.client.get(self.route.format('123'))
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertDictEqual(
+            response.json(),
+            {
+                'success': False,
+                'message': 'Invalid Code',
+                'status': 400,
+                'data': 'invalid_code',
+            },
+        )
+
+
+class QuickOfferProductsViewTestCase(TestCase):
+    fixtures = [
+        'src/fixtures/inventory.json',
+        'src/fixtures/campaign.json',
+        'src/fixtures/quick_offers.json',
+    ]
+
+    def setUp(self):
+        self.client = APIClient()
+        self.quick_offer = QuickOffer.objects.first()
+        self.auth_token = jwt_encode({'quick_offer_id': self.quick_offer.id})
+
+    def test_without_auth(self):
+        response = self.client.get('/campaign/quick-offer-products')
+        self.assertEqual(response.status_code, 401)
+        self.assertDictEqual(
+            response.json(),
+            {'detail': 'Authentication credentials were not provided.'},
+        )
+
+    def test_query_param_category_id(self):
+        products = self.quick_offer.products
+        category_id = products.first().categories.first().id
+        category_products = products.filter(categories=category_id)
+        query_params = f'category_id={category_id}'
+        response = self.client.get(
+            '/campaign/quick-offer-products?' + query_params,
+            HTTP_X_AUTHORIZATION=f'Bearer {self.auth_token}',
+        )
+        self.assertEqual(response.status_code, 200)
+        self.assertListEqual(
+            [p['id'] for p in response.json()['data']['page_data']],
+            list(category_products.values_list('id', flat=True)),
+        )
+
+    def test_query_param_limit(self):
+        limit = 1
+        query_params = f'limit={limit}'
+        response = self.client.get(
+            '/campaign/quick-offer-products?' + query_params,
+            HTTP_X_AUTHORIZATION=f'Bearer {self.auth_token}',
+        )
+        self.assertEqual(response.status_code, 200)
+        self.assertListEqual(
+            [p['id'] for p in response.json()['data']['page_data']],
+            list(self.quick_offer.products.values_list('id', flat=True)[:limit]),
+        )
+
+    def test_query_param_page(self):
+        limit = 2
+        page = 2
+        offset = (page - 1) * limit
+        query_params = f'limit={limit}&page={page}'
+        response = self.client.get(
+            '/campaign/quick-offer-products?' + query_params,
+            HTTP_X_AUTHORIZATION=f'Bearer {self.auth_token}',
+        )
+        self.assertEqual(response.status_code, 200)
+        self.assertListEqual(
+            [p['id'] for p in response.json()['data']['page_data']],
+            list(
+                self.quick_offer.products.values_list('id', flat=True)[
+                    offset : offset + limit
+                ]
+            ),
+        )
+
+    def test_query_param_search(self):
+        product = self.quick_offer.products.first()
+        for search in [product.name_en, product.name_he]:
+            query_params = f'q={search}'
+            response = self.client.get(
+                '/campaign/quick-offer-products?' + query_params,
+                HTTP_X_AUTHORIZATION=f'Bearer {self.auth_token}',
+            )
+            self.assertEqual(response.status_code, 200)
+            self.assertListEqual(
+                [p['id'] for p in response.json()['data']['page_data']],
+                list(
+                    self.quick_offer.products.filter(
+                        Q(name_en__icontains=search) | Q(name_he__icontains=search)
+                    ).values_list('id', flat=True)
+                ),
+            )
+
+    def test_query_param_not_including_tax(self):
+        response = self.client.get(
+            '/campaign/quick-offer-products?',
+            HTTP_X_AUTHORIZATION=f'Bearer {self.auth_token}',
+        )
+        tax_included_calculated_price = {
+            p['id']: p['calculated_price'] for p in response.json()['data']['page_data']
+        }
+        query_params = 'including_tax=0'
+        response = self.client.get(
+            '/campaign/quick-offer-products?' + query_params,
+            HTTP_X_AUTHORIZATION=f'Bearer {self.auth_token}',
+        )
+        self.assertEqual(response.status_code, 200)
+        self.assertTrue(
+            all(
+                int(p['calculated_price'])
+                == int(
+                    tax_included_calculated_price[p['id']] - int(settings.TAX_AMOUNT)
+                )
+                for p in response.json()['data']['page_data']
+            )
+        )
+
+    def test_calculated_price_is_org_price(self):
+        OrganizationProduct.objects.filter(
+            organization=self.quick_offer.organization,
+            product__in=self.quick_offer.products.all(),
+        ).update(price=100)
+        self.quick_offer.products.all().update(sale_price=None)
+        response = self.client.get(
+            '/campaign/quick-offer-products',
+            HTTP_X_AUTHORIZATION=f'Bearer {self.auth_token}',
+        )
+        self.assertEqual(response.status_code, 200)
+        self.assertTrue(
+            all(
+                p['calculated_price'] == 100
+                for p in response.json()['data']['page_data']
+            )
+        )
+
+    def test_calculated_price_is_product_sale_price(self):
+        OrganizationProduct.objects.filter(
+            organization=self.quick_offer.organization,
+            product__in=self.quick_offer.products.all(),
+        ).update(price=0)
+        self.quick_offer.products.all().update(sale_price=110)
+        response = self.client.get(
+            '/campaign/quick-offer-products',
+            HTTP_X_AUTHORIZATION=f'Bearer {self.auth_token}',
+        )
+        self.assertEqual(response.status_code, 200)
+        self.assertTrue(
+            all(
+                p['calculated_price'] == 110
+                for p in response.json()['data']['page_data']
+            )
+        )
+
+    def test_order_by_calculated_price(self):
+        expected_response_products = (
+            OrganizationProduct.objects.filter(
+                organization=self.quick_offer.organization,
+                product__in=self.quick_offer.products.all(),
+            )
+            .order_by('price')
+            .values_list('product_id', flat=True)
+        )
+        response = self.client.get(
+            '/campaign/quick-offer-products',
+            HTTP_X_AUTHORIZATION=f'Bearer {self.auth_token}',
+        )
+        self.assertEqual(response.status_code, 200)
+        self.assertListEqual(
+            [p['id'] for p in response.json()['data']['page_data']],
+            list(expected_response_products),
+        )
+
+    def test_response_data(self):
+        response = self.client.get(
+            '/campaign/quick-offer-products?page=1&limit=1',
+            HTTP_X_AUTHORIZATION=f'Bearer {self.auth_token}',
+        )
+        self.assertEqual(response.status_code, 200)
+        self.assertDictEqual(
+            response.json(),
+            {
+                'success': True,
+                'message': 'Quick offer products fetched successfully.',
+                'status': 200,
+                'data': {
+                    'page_data': [
+                        {
+                            'id': 1,
+                            'name': 'product name en 1',
+                            'description': 'description 1',
+                            'sku': 'sku 1',
+                            'link': '',
+                            'technical_details': '',
+                            'warranty': '',
+                            'exchange_value': None,
+                            'exchange_policy': '',
+                            'product_type': 'REGULAR',
+                            'product_kind': 'PHYSICAL',
+                            'brand': {'name': 'brand name en 1', 'logo_image': None},
+                            'supplier': {'name': 'supplier name en 1'},
+                            'images': [],
+                            'categories': [
+                                {
+                                    'id': 1,
+                                    'name': 'category1',
+                                    'icon_image': None,
+                                    'order': 1,
+                                }
+                            ],
+                            'calculated_price': 100,
+                            'remaining_quantity': 197,
+                        },
+                    ],
+                    'page_num': 1,
+                    'has_more': True,
+                    'total_count': 3,
+                },
+            },
+        )
+
+
+class QuickOfferProductViewTestCase(TestCase):
+    fixtures = [
+        'src/fixtures/inventory.json',
+        'src/fixtures/campaign.json',
+        'src/fixtures/quick_offers.json',
+    ]
+
+    def setUp(self):
+        self.client = APIClient()
+        self.quick_offer = QuickOffer.objects.first()
+        self.auth_token = jwt_encode({'quick_offer_id': self.quick_offer.id})
+        self.product = self.quick_offer.products.first()
+
+    def test_without_auth(self):
+        response = self.client.get(f'/campaign/quick-offer-product/{self.product.id}')
+        self.assertEqual(response.status_code, 401)
+        self.assertDictEqual(
+            response.json(),
+            {'detail': 'Authentication credentials were not provided.'},
+        )
+
+    def test_inactive_quick_offer(self):
+        QuickOffer.objects.update(status=QuickOffer.StatusEnum.PENDING.name)
+        response = self.client.get(
+            f'/campaign/quick-offer-product/{self.product.id}',
+            HTTP_X_AUTHORIZATION=f'Bearer {self.auth_token}',
+        )
+        self.assertEqual(response.status_code, 403)
+        self.assertDictEqual(
+            response.json(),
+            {'detail': 'You do not have permission to perform this action.'},
+        )
+
+    def test_invalid_product_id(self):
+        response = self.client.get(
+            f'/campaign/quick-offer-product/{Product.objects.count()+1}',
+            HTTP_X_AUTHORIZATION=f'Bearer {self.auth_token}',
+        )
+        self.assertEqual(response.status_code, 404)
+        self.assertDictEqual(
+            response.json(),
+            {
+                'success': False,
+                'message': 'Product not found.',
+                'status': 404,
+                'code': 'not_found',
+                'data': {},
+            },
+        )
+
+    def test_valid_product_id(self):
+        response = self.client.get(
+            f'/campaign/quick-offer-product/{self.product.id}',
+            HTTP_X_AUTHORIZATION=f'Bearer {self.auth_token}',
+        )
+        self.assertEqual(response.status_code, 200)
+        self.assertDictEqual(
+            response.json(),
+            {
+                'success': True,
+                'message': 'Product fetched successfully.',
+                'status': 200,
+                'data': QuickOfferProductSerializer(
+                    self.product,
+                    context={'quick_offer': self.quick_offer, 'tax_amount': 0},
+                ).data,
+            },
+        )
+
+
+class QuickOfferSelectProductsTestCase(TestCase):
+    fixtures = [
+        'src/fixtures/inventory.json',
+        'src/fixtures/campaign.json',
+        'src/fixtures/quick_offers.json',
+    ]
+
+    def setUp(self):
+        self.client = APIClient()
+        self.quick_offer = QuickOffer.objects.first()
+        self.auth_token = jwt_encode({'quick_offer_id': self.quick_offer.id})
+
+    def test_without_auth(self):
+        response = self.client.post('/campaign/list/add_product')
+        self.assertEqual(response.status_code, 401)
+        self.assertDictEqual(
+            response.json(),
+            {'detail': 'Authentication credentials were not provided.'},
+        )
+
+    def test_inactive_quick_offer(self):
+        QuickOffer.objects.update(status=QuickOffer.StatusEnum.PENDING.name)
+        response = self.client.post(
+            '/campaign/list/add_product',
+            HTTP_X_AUTHORIZATION=f'Bearer {self.auth_token}',
+        )
+        self.assertEqual(response.status_code, 403)
+        self.assertDictEqual(
+            response.json(),
+            {'detail': 'You do not have permission to perform this action.'},
+        )
+
+    def test_invalid_request_data(self):
+        response = self.client.post(
+            '/campaign/list/add_product',
+            HTTP_X_AUTHORIZATION=f'Bearer {self.auth_token}',
+            data={'product_id': 1},
+            format='json',
+        )
+        self.assertEqual(response.status_code, 400)
+
+    def test_invalid_product_id(self):
+        valid_product_ids = list(self.quick_offer.products.values_list('id', flat=True))
+        invalid_product_id = list(
+            Product.objects.exclude(id__in=valid_product_ids).values_list(
+                'id', flat=True
+            )
+        )[0]
+        response = self.client.post(
+            '/campaign/list/add_product',
+            HTTP_X_AUTHORIZATION=f'Bearer {self.auth_token}',
+            data={'product_id': invalid_product_id, 'quantity': 1},
+            format='json',
+        )
+        self.assertEqual(response.status_code, 404)
+        self.assertDictEqual(
+            response.json(),
+            {
+                'success': False,
+                'message': 'Product not found.',
+                'code': 'not_found',
+                'status': 404,
+                'data': {},
+            },
+        )
+
+    def test_valid_product_id(self):
+        self.quick_offer.selected_products.clear()
+        product_id = self.quick_offer.products.first().id
+        response = self.client.post(
+            '/campaign/list/add_product',
+            HTTP_X_AUTHORIZATION=f'Bearer {self.auth_token}',
+            data={'product_id': product_id, 'quantity': 5},
+            format='json',
+        )
+        self.assertEqual(response.status_code, 200)
+        self.assertDictEqual(
+            response.json(),
+            {
+                'success': True,
+                'message': 'Product selected successfully with quantity.',
+                'status': 200,
+                'data': {},
+            },
+        )
+        self.quick_offer.refresh_from_db()
+        self.assertEqual(self.quick_offer.quickofferselectedproduct_set.count(), 1)
+        self.assertEqual(
+            self.quick_offer.quickofferselectedproduct_set.first().quantity, 5
+        )
+        response = self.client.post(
+            '/campaign/list/add_product',
+            HTTP_X_AUTHORIZATION=f'Bearer {self.auth_token}',
+            data={'product_id': product_id, 'quantity': 2},
+            format='json',
+        )
+        self.quick_offer.refresh_from_db()
+        self.assertEqual(self.quick_offer.quickofferselectedproduct_set.count(), 1)
+        self.assertEqual(
+            self.quick_offer.quickofferselectedproduct_set.first().quantity, 2
+        )
+
+
+class GetQuickOfferSelectProductsTestCase(TestCase):
+    fixtures = [
+        'src/fixtures/inventory.json',
+        'src/fixtures/campaign.json',
+        'src/fixtures/quick_offers.json',
+    ]
+
+    def setUp(self):
+        self.client = APIClient()
+        self.quick_offer = QuickOffer.objects.first()
+        self.selected_quick_offer = QuickOfferSelectedProduct.objects.filter(
+            quantity__gt=0
+        ).all()
+        self.auth_token = jwt_encode({'quick_offer_id': self.quick_offer.id})
+
+    def test_without_auth(self):
+        response = self.client.get('/campaign/list/')
+        self.assertEqual(response.status_code, 401)
+        self.assertDictEqual(
+            response.json(),
+            {'detail': 'Authentication credentials were not provided.'},
+        )
+
+    def test_inactive_quick_offer(self):
+        QuickOffer.objects.update(status=QuickOffer.StatusEnum.PENDING.name)
+        response = self.client.get(
+            '/campaign/list/',
+            HTTP_X_AUTHORIZATION=f'Bearer {self.auth_token}',
+        )
+        self.assertEqual(response.status_code, 403)
+        self.assertDictEqual(
+            response.json(),
+            {'detail': 'You do not have permission to perform this action.'},
+        )
+
+    def test_valid_quick_offer_product(self):
+        response = self.client.get(
+            '/campaign/list/',
+            HTTP_X_AUTHORIZATION=f'Bearer {self.auth_token}',
+        )
+        self.assertEqual(response.status_code, 200)
+        serialized_data = QuickOfferSelectProductsDetailSerializer(
+            self.selected_quick_offer,
+            many=True,
+            context={
+                'quick_offer': self.quick_offer,
+            },
+        ).data
+
+        self.assertDictEqual(
+            response.json(),
+            {
+                'success': True,
+                'message': 'Selected Product fetched successfully.',
+                'status': 200,
+                'data': {
+                    'products': serialized_data,
+                },
+            },
+        )
+
+class QuickOfferShareTestCase(TestCase):
+    fixtures = [
+        'src/fixtures/inventory.json',
+        'src/fixtures/campaign.json',
+        'src/fixtures/quick_offers.json',
+    ]
+
+    def setUp(self):
+        self.client = APIClient()
+        self.quick_offer = QuickOffer.objects.first()
+        self.auth_token = jwt_encode({'quick_offer_id': self.quick_offer.id})
+
+    def test_without_auth(self):
+        response = self.client.post('/campaign/quick-offer-share/')
+        self.assertEqual(response.status_code, 401)
+        self.assertDictEqual(
+            response.json(),
+            {'detail': 'Authentication credentials were not provided.'},
+        )
+
+    def test_inactive_quick_offer(self):
+        QuickOffer.objects.update(status=QuickOffer.StatusEnum.PENDING.name)
+        response = self.client.post(
+            '/campaign/quick-offer-share/',
+            HTTP_X_AUTHORIZATION=f'Bearer {self.auth_token}',
+        )
+        self.assertEqual(response.status_code, 403)
+        self.assertDictEqual(
+            response.json(),
+            {'detail': 'You do not have permission to perform this action.'},
+        )
+
+    def test_invalid_request_data(self):
+        response = self.client.post(
+            '/campaign/quick-offer-share/',
+            HTTP_X_AUTHORIZATION=f'Bearer {self.auth_token}',
+            data={'share_type': 'Cart'},
+            format='json',
+        )
+        self.assertEqual(response.status_code, 400)
+
+    def test_invalid_share_type(self):
+        response = self.client.post(
+            '/campaign/quick-offer-share/',
+            HTTP_X_AUTHORIZATION=f'Bearer {self.auth_token}',
+            data={'share_type': 'Event', 'product_ids': [1, 2]},
+            format='json',
+        )
+        self.assertEqual(response.status_code, 400)
+        self.assertDictEqual(
+            response.json(),
+            {
+                'success': False,
+                'message': 'Invalid share type provided.',
+                'code': 'invalid_share_type',
+                'status': 400,
+            },
+        )
+
+    def test_not_selected_quick_offer(self):
+        quick_offer = QuickOffer.objects.filter(id=2).first()
+        auth_token = jwt_encode({'quick_offer_id': quick_offer.id})
+        response = self.client.post(
+            '/campaign/quick-offer-share/',
+            HTTP_X_AUTHORIZATION=f'Bearer {auth_token}',
+            data={'share_type': 'Cart', 'product_ids': [1, 2]},
+            format='json',
+        )
+        self.assertEqual(response.status_code, 400)
+        self.assertDictEqual(
+            response.json(),
+            {
+                'success': False,
+                'message': 'No Products Selected.',
+                'code': 'no_products_selected',
+                'status': 400,
+            },
+        )
+
+    def test_valid_product_id(self):
+        response = self.client.post(
+            '/campaign/quick-offer-share/',
+            HTTP_X_AUTHORIZATION=f'Bearer {self.auth_token}',
+            data={'share_type': 'Cart', 'product_ids': [1, 2]},
+            format='json',
+        )
+        self.assertEqual(response.status_code, 200)
+        share = Share.objects.first()
+        share.refresh_from_db()
+        self.assertDictEqual(
+            response.json(),
+            {
+                'success': True,
+                'message': 'Products shared successfully.',
+                'status': 200,
+                'data': {'share_id': str(share.share_id)},
+            },
+        )
+
+class GetQuickOfferShareTestCase(TestCase):
+    fixtures = [
+        'src/fixtures/inventory.json',
+        'src/fixtures/campaign.json',
+        'src/fixtures/quick_offers.json',
+    ]
+
+    def setUp(self):
+        self.client = APIClient()
+        self.quick_offer = QuickOffer.objects.first()
+        self.auth_token = jwt_encode({'quick_offer_id': self.quick_offer.id})
+        self.share1 = Share.objects.create(
+            share_type='Cart', quick_offer=self.quick_offer
+        )
+
+    def test_invalid_share_id(self):
+        response = self.client.get(
+            '/campaign/get-quick-offer-share/aaa78629-2013-4389-996a-b90955fb796a'
+        )
+        self.assertEqual(response.status_code, 404)
+        self.assertDictEqual(
+            response.json(),
+            {
+                'success': False,
+                'message': 'Share not found.',
+                'code': 'not_found',
+                'status': 404,
+            },
+        )
+
+    def test_valid_share_id(self):
+        response = self.client.get(
+            f'/campaign/get-quick-offer-share/{self.share1.share_id}',
+            HTTP_X_AUTHORIZATION=f'Bearer {self.auth_token}',
+        )
+        self.assertEqual(response.status_code, 200)
+
+        self.assertDictEqual(
+            response.json(),
+            {
+                'success': True,
+                'message': 'Share details fetched successfully.',
+                'status': 200,
+                'data': {
+                    'share_type': 'Cart',
+                    'products': [],
+                    'cart': [
+                        {
+                            'id': 1,
+                            'product': {
+                                'id': 1,
+                                'name': 'product name en 1',
+                                'description': 'description 1',
+                                'sku': 'sku 1',
+                                'link': '',
+                                'technical_details': '',
+                                'warranty': '',
+                                'exchange_value': None,
+                                'exchange_policy': '',
+                                'product_type': 'REGULAR',
+                                'product_kind': 'PHYSICAL',
+                                'brand': {
+                                    'name': 'brand name en 1',
+                                    'logo_image': None,
+                                },
+                                'supplier': {'name': 'supplier name en 1'},
+                                'images': [],
+                                'categories': [
+                                    {
+                                        'id': 1,
+                                        'name': 'category1',
+                                        'icon_image': None,
+                                        'order': 1,
+                                    }
+                                ],
+                                'calculated_price': 100,
+                                'remaining_quantity': 197,
+                            },
+                            'quantity': 2,
+                        },
+                        {
+                            'id': 2,
+                            'product': {
+                                'id': 2,
+                                'name': 'product name en 2',
+                                'description': 'description 1',
+                                'sku': 'sku 2',
+                                'link': '',
+                                'technical_details': '',
+                                'warranty': '',
+                                'exchange_value': None,
+                                'exchange_policy': '',
+                                'product_type': 'REGULAR',
+                                'product_kind': 'PHYSICAL',
+                                'brand': {
+                                    'name': 'brand name en 1',
+                                    'logo_image': None,
+                                },
+                                'supplier': {'name': 'supplier name en 1'},
+                                'images': [],
+                                'categories': [
+                                    {
+                                        'id': 2,
+                                        'name': 'category2',
+                                        'icon_image': None,
+                                        'order': 2,
+                                    }
+                                ],
+                                'calculated_price': 110,
+                                'remaining_quantity': 200,
+                            },
+                            'quantity': 0,
+                        },
+                    ],
+                },
+            },
+        )
+
+class QuickOfferCreateOrder(TestCase):
+    fixtures = [
+        'src/fixtures/inventory.json',
+        'src/fixtures/campaign.json',
+        'src/fixtures/quick_offers.json',
+    ]
+
+    def setUp(self):
+        self.client = APIClient()
+        self.quick_offer = QuickOffer.objects.first()
+        self.auth_token = jwt_encode({'quick_offer_id': self.quick_offer.id})
+        order = Order.objects.create(
+            campaign_employee_id=CampaignEmployee.objects.first(),
+            order_date_time=datetime.now(timezone.utc),
+            cost_from_budget=10,
+            cost_added=10,
+        )
+        for i in range(1, 3):
+            OrderProduct.objects.create(
+                order_id=order,
+                product_id=EmployeeGroupCampaignProduct.objects.get(pk=1),
+                quantity=10 * i,
+            )
+            OrderProduct.objects.create(
+                order_id=order,
+                product_id=EmployeeGroupCampaignProduct.objects.get(pk=2),
+                quantity=20 * i,
+            )
+
+    def test_without_auth(self):
+        response = self.client.post('/campaign/quick-offer-order')
+        self.assertEqual(response.status_code, 401)
+        self.assertDictEqual(
+            response.json(),
+            {'detail': 'Authentication credentials were not provided.'},
+        )
+
+    def test_inactive_quick_offer(self):
+        QuickOffer.objects.update(status=QuickOffer.StatusEnum.PENDING.name)
+        response = self.client.post(
+            '/campaign/quick-offer-order',
+            HTTP_X_AUTHORIZATION=f'Bearer {self.auth_token}',
+        )
+        self.assertEqual(response.status_code, 403)
+        self.assertDictEqual(
+            response.json(),
+            {'detail': 'You do not have permission to perform this action.'},
+        )
+
+    def test_request_fields(self):
+        fields = [
+            'full_name',
+            'phone_number',
+            'additional_phone_number',
+            'delivery_city',
+            'delivery_street',
+            'delivery_street_number',
+            'delivery_apartment_number',
+            'delivery_additional_details',
+            'country',
+            'state_code',
+            'zip_code',
+            'size',
+            'color',
+        ]
+        response = self.client.post(
+            '/campaign/quick-offer-order',
+            HTTP_X_AUTHORIZATION=f'Bearer {self.auth_token}',
+            format='json',
+            data={f: [] for f in fields},
+        )
+        self.assertEqual(response.status_code, 400)
+        self.assertEqual(
+            response.json(),
+            {
+                'success': False,
+                'message': 'Request is invalid.',
+                'code': 'request_invalid',
+                'status': 400,
+                'data': {f: ['Not a valid string.'] for f in fields},
+            },
+        )
+
+    def test_selected_products_not_found(self):
+        QuickOfferSelectedProduct.objects.all().delete()
+        response = self.client.post(
+            '/campaign/quick-offer-order',
+            HTTP_X_AUTHORIZATION=f'Bearer {self.auth_token}',
+        )
+        self.assertEqual(response.status_code, 404)
+        self.assertDictEqual(
+            response.json(),
+            {
+                'success': False,
+                'message': 'Empty cart.',
+                'code': 'not_found',
+                'status': 404,
+                'data': {},
+            },
+        )
+
+    def test_selected_products_quantity_more_than_product_remaining_quantity(self):
+        QuickOfferSelectedProduct.objects.filter(pk=1).update(quantity=200)
+        QuickOfferSelectedProduct.objects.filter(pk=2).update(quantity=300)
+        response = self.client.post(
+            '/campaign/quick-offer-order',
+            HTTP_X_AUTHORIZATION=f'Bearer {self.auth_token}',
+        )
+        self.assertEqual(response.status_code, 400)
+        self.assertDictEqual(
+            response.json(),
+            {
+                'success': False,
+                'message': (
+                    'The requested quantity is not available. '
+                    'The remaining quantity is 167.'
+                ),
+                'code': 'request_invalid',
+                'status': 400,
+                'data': {},
+            },
+        )
+
+    def test_existing_pending_order(self):
+        QuickOfferOrder.objects.update(status=QuickOfferOrder.OrderStatusEnum.PENDING)
+        response = self.client.post(
+            '/campaign/quick-offer-order',
+            HTTP_X_AUTHORIZATION=f'Bearer {self.auth_token}',
+        )
+        self.assertEqual(response.status_code, 400)
+        self.assertDictEqual(
+            response.json(),
+            {
+                'success': False,
+                'message': 'Quick Offer already ordered.',
+                'code': 'already_ordered',
+                'status': 400,
+                'data': {},
+            },
+        )
+
+    def test_valid_create_order(self):
+        QuickOfferOrder.objects.all().delete()
+        self.assertFalse(QuickOfferOrder.objects.all().count())
+        self.assertFalse(QuickOfferOrderProduct.objects.all().count())
+        request_data = {
+            'full_name': 'full_name',
+            'phone_number': 'phone_number',
+            'additional_phone_number': 'additional_phone_number',
+            'delivery_city': 'delivery_city',
+            'delivery_street': 'delivery_street',
+            'delivery_street_number': 'delivery_street_number',
+            'delivery_apartment_number': 'delivery_apartment_number',
+            'delivery_additional_details': 'delivery_additional_details',
+            'country': 'country',
+            'state_code': 'state_code',
+            'zip_code': 'zip_code',
+            'size': 'size',
+            'color': 'color',
+        }
+        response = self.client.post(
+            '/campaign/quick-offer-order',
+            HTTP_X_AUTHORIZATION=f'Bearer {self.auth_token}',
+            format='json',
+            data=request_data,
+        )
+        self.assertEqual(response.status_code, 200)
+        self.assertDictEqual(
+            response.json(),
+            {
+                'success': True,
+                'message': 'Order placed successfully.',
+                'status': 200,
+                'data': {'reference': 2},
+            },
+        )
+        quick_offer_order = QuickOfferOrder.objects.filter(reference=2).first()
+        self.assertTrue(quick_offer_order)
+        self.assertTrue(
+            QuickOfferOrderProduct.objects.filter(quick_offer_order=quick_offer_order)
+        )
+
+
+class QuickOfferGetOrder(TestCase):
+    fixtures = [
+        'src/fixtures/inventory.json',
+        'src/fixtures/campaign.json',
+        'src/fixtures/quick_offers.json',
+    ]
+
+    def setUp(self):
+        self.client = APIClient()
+        self.quick_offer = QuickOffer.objects.first()
+        self.auth_token = jwt_encode({'quick_offer_id': self.quick_offer.id})
+
+    def test_without_auth(self):
+        response = self.client.get('/campaign/quick-offer-order')
+        self.assertEqual(response.status_code, 401)
+        self.assertDictEqual(
+            response.json(),
+            {'detail': 'Authentication credentials were not provided.'},
+        )
+
+    def test_inactive_quick_offer(self):
+        QuickOffer.objects.update(status=QuickOffer.StatusEnum.PENDING)
+        response = self.client.get(
+            '/campaign/quick-offer-order',
+            HTTP_X_AUTHORIZATION=f'Bearer {self.auth_token}',
+        )
+        self.assertEqual(response.status_code, 403)
+        self.assertDictEqual(
+            response.json(),
+            {'detail': 'You do not have permission to perform this action.'},
+        )
+
+    def test_order_not_found(self):
+        QuickOfferOrder.objects.update(
+            status=QuickOfferOrder.OrderStatusEnum.INCOMPLETE
+        )
+        response = self.client.get(
+            '/campaign/quick-offer-order',
+            HTTP_X_AUTHORIZATION=f'Bearer {self.auth_token}',
+        )
+        self.assertEqual(response.status_code, 404)
+        self.assertDictEqual(
+            response.json(),
+            {
+                'success': False,
+                'message': 'Order not found.',
+                'code': 'not_found',
+                'status': 404,
+                'data': {},
+            },
+        )
+
+    def test_valid_request(self):
+        QuickOfferOrder.objects.update(status=QuickOfferOrder.OrderStatusEnum.PENDING)
+        response = self.client.get(
+            '/campaign/quick-offer-order',
+            HTTP_X_AUTHORIZATION=f'Bearer {self.auth_token}',
+        )
+        self.assertEqual(response.status_code, 200)
+        response.json()['data'].pop('order_date_time')
+        self.assertEqual(
+            response.json(),
+            {
+                'success': True,
+                'message': 'Quick offer order fetched successfully.',
+                'status': 200,
+                'data': {
+                    'full_name': 'quick_offer_order_1',
+                    'reference': 1,
+                    'products': [
+                        {
+                            'quantity': 3,
+                            'product': {
+                                'id': 1,
+                                'name': 'product name en 1',
+                                'description': 'description 1',
+                                'sku': 'sku 1',
+                                'link': '',
+                                'technical_details': '',
+                                'warranty': '',
+                                'exchange_value': None,
+                                'exchange_policy': '',
+                                'product_type': 'REGULAR',
+                                'product_kind': 'PHYSICAL',
+                                'brand': {
+                                    'name': 'brand name en 1',
+                                    'logo_image': None,
+                                },
+                                'supplier': {'name': 'supplier name en 1'},
+                                'images': [],
+                                'categories': [
+                                    {
+                                        'id': 1,
+                                        'name': 'category1',
+                                        'icon_image': None,
+                                        'order': 1,
+                                    }
+                                ],
+                                'calculated_price': 100,
+                                'remaining_quantity': 197,
+                            },
+                            'total_cost': 3,
+                        }
+                    ],
+                    'phone_number': '9876543210',
+                    'additional_phone_number': '9876543210',
+                    'delivery_city': 'quick_offer_order_1',
+                    'delivery_street': 'quick_offer_order_1',
+                    'delivery_street_number': 'quick_offer_order_1',
+                    'delivery_apartment_number': 'quick_offer_order_1',
+                    'delivery_additional_details': 'quick_offer_order_1',
+                },
+            },
+        )
+
+
+class QuickOfferCancelOrder(TestCase):
+    fixtures = [
+        'src/fixtures/inventory.json',
+        'src/fixtures/campaign.json',
+        'src/fixtures/quick_offers.json',
+    ]
+
+    def setUp(self):
+        self.client = APIClient()
+        self.quick_offer = QuickOffer.objects.first()
+        self.auth_token = jwt_encode({'quick_offer_id': self.quick_offer.id})
+        self.quick_offer_order = QuickOfferOrder.objects.first()
+
+    def test_without_auth(self):
+        response = self.client.put(
+            f'/campaign/quick-offer-cancel-order/{self.quick_offer_order.pk}'
+        )
+        self.assertEqual(response.status_code, 401)
+        self.assertDictEqual(
+            response.json(),
+            {'detail': 'Authentication credentials were not provided.'},
+        )
+
+    def test_inactive_quick_offer(self):
+        QuickOffer.objects.update(status=QuickOffer.StatusEnum.PENDING)
+        response = self.client.put(
+            f'/campaign/quick-offer-cancel-order/{self.quick_offer_order.pk}',
+            HTTP_X_AUTHORIZATION=f'Bearer {self.auth_token}',
+        )
+        self.assertEqual(response.status_code, 403)
+        self.assertDictEqual(
+            response.json(),
+            {'detail': 'You do not have permission to perform this action.'},
+        )
+
+    def test_order_not_found(self):
+        QuickOfferOrder.objects.update(
+            status=QuickOfferOrder.OrderStatusEnum.INCOMPLETE
+        )
+        response = self.client.put(
+            f'/campaign/quick-offer-cancel-order/{self.quick_offer_order.pk}',
+            HTTP_X_AUTHORIZATION=f'Bearer {self.auth_token}',
+        )
+        self.assertEqual(response.status_code, 404)
+        self.assertDictEqual(
+            response.json(),
+            {
+                'success': False,
+                'message': 'Order not found.',
+                'code': 'not_found',
+                'status': 404,
+                'data': {},
+            },
+        )
+
+    def test_valid_request(self):
+        QuickOfferOrder.objects.update(status=QuickOfferOrder.OrderStatusEnum.PENDING)
+        self.assertTrue(
+            QuickOfferSelectedProduct.objects.filter(quick_offer=self.quick_offer)
+        )
+        response = self.client.put(
+            f'/campaign/quick-offer-cancel-order/{self.quick_offer_order.pk}',
+            HTTP_X_AUTHORIZATION=f'Bearer {self.auth_token}',
+        )
+        self.assertEqual(response.status_code, 200)
+        self.assertDictEqual(
+            response.json(),
+            {
+                'success': True,
+                'message': 'order canceled successfully.',
+                'status': 200,
+                'data': {},
+            },
+        )
+        self.quick_offer_order.refresh_from_db()
+        self.assertEqual(self.quick_offer_order.status, 'OrderStatusEnum.CANCELLED')
+        self.assertFalse(
+            QuickOfferSelectedProduct.objects.filter(quick_offer=self.quick_offer)
         )

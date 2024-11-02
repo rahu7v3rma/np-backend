@@ -1,6 +1,7 @@
 from django.urls import path
 
-from campaign import views
+from . import views
+from .admin_views import CampaignEmployeeAutocompleteView
 
 
 urlpatterns = [
@@ -93,5 +94,70 @@ urlpatterns = [
         '<str:campaign_code>/cart/products/',
         views.GetCartProductsView.as_view(),
         name='get_cart_products',
+    ),
+    path(
+        'campaign-employee-autocomplete',
+        CampaignEmployeeAutocompleteView.as_view(),
+        name='campaign-employee-autocomplete',
+    ),
+    path(
+        'quick-offer/<str:quick_offer_code>',
+        views.OrganizationQuickOfferView.as_view(),
+        name='organization-quick-offer',
+    ),
+    path(
+        '<str:quick_offer_code>/quick-offer-login',
+        views.OrganizationQuickOfferLoginView.as_view(),
+        name='organization_quick_offer_login',
+    ),
+    path(
+        'validate/<str:code>',
+        views.ValidateCodeView.as_view(),
+        name='validate_code',
+    ),
+    path(
+        'quick-offer-products',
+        views.QuickOfferProductsView.as_view(),
+        name='quick_offer_products',
+    ),
+    path(
+        'quick-offer-product/<int:product_id>',
+        views.QuickOfferProductView.as_view(),
+        name='quick_offer_product',
+    ),
+    path(
+        'list/add_product',
+        views.QuickOfferSelectProductsView.as_view(),
+        name='quick_offer_select_products',
+    ),
+    path(
+        'list/',
+        views.GetQuickOfferSelectProductsView.as_view(),
+        name='get_quick_offer_select_products',
+    ),
+    path(
+        'quick-offer-categories',
+        views.QuickOfferCategoriesView.as_view(),
+        name='compaign_categories',
+    ),
+    path(
+        'quick-offer-share/',
+        views.QuickOfferShareView.as_view(),
+        name='quick_offer_share',
+    ),
+    path(
+        'get-quick-offer-share/<str:share_id>',
+        views.GetQuickOfferShareView.as_view(),
+        name='campaign_product',
+    ),
+    path(
+        'quick-offer-order',
+        views.QuickOfferOrderView.as_view(),
+        name='quick_offer_order',
+    ),
+    path(
+        'quick-offer-cancel-order/<str:order_id>',
+        views.QuickOfferCancelOrderView.as_view(),
+        name='quick_offer_cancel_order',
     ),
 ]

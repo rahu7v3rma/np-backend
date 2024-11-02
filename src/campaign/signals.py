@@ -9,6 +9,7 @@ from .models import (
     Employee,
     EmployeeAuthEnum,
     EmployeeGroupCampaign,
+    QuickOffer,
 )
 from .tasks import (
     send_campaign_welcome_message_email,
@@ -20,6 +21,14 @@ from .tasks import (
 def create_campaign_code(sender, instance, **kwargs):
     # generate the campaign code only if a code has not been generated yet
     if not instance.code:
+        instance.code = secrets.token_hex(8)
+
+
+@receiver(pre_save, sender=QuickOffer)
+def create_quick_offer_code(sender, instance, **kwargs):
+    # generate the quick offer code only if a code has not been generated yet
+    if not instance.code:
+        instance.status = QuickOffer.StatusEnum.ACTIVE.name
         instance.code = secrets.token_hex(8)
 
 

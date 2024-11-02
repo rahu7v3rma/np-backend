@@ -33,7 +33,6 @@ env = environ.Env(
     IMAGE_STORAGE_PREFIX=(str, ''),
     IMAGE_STORAGE_BASE_RETRIEVE_URL=(str, ''),
     DATA_STORAGE_BUCKET_NAME=(str, ''),
-    DATA_STORAGE_PREFIX=(str, ''),
     DATA_STORAGE_ENDPOINT_URL=(str, None),
     AWS_S3_REGION_NAME=(str, None),
     DEFAULT_FROM_EMAIL=(str, ''),
@@ -67,6 +66,7 @@ env = environ.Env(
     ORIAN_CONSIGNEE=(str, None),
     ORIAN_ID_PREFIX=(str, ''),
     ORIAN_MESSAGE_TIMEZONE_NAME=(str, None),
+    ORIAN_DUMMY_CUSTOMER_PLATFORM_ID=(int, None),
     ORIAN_DUMMY_CUSTOMER_COMPANY_STREET=(str, None),
     ORIAN_DUMMY_CUSTOMER_COMPANY_STREET_NUMBER=(str, None),
     ORIAN_DUMMY_CUSTOMER_COMPANY_CITY=(str, None),
@@ -76,8 +76,15 @@ env = environ.Env(
     ORIAN_RABBITMQ_VIRTUAL_HOST=(str, None),
     ORIAN_RABBITMQ_USER=(str, None),
     ORIAN_RABBITMQ_PASSWORD=(str, None),
+    ORIAN_SFTP_HOST=(str, None),
+    ORIAN_SFTP_PORT=(int, None),
+    ORIAN_SFTP_USER=(str, None),
+    ORIAN_SFTP_PASSWORD=(str, None),
+    ORIAN_SFTP_SNAPSHOTS_DIR=(str, None),
     CC_RECIPIENT_EMAILS=(list, []),
     REPLY_TO_ADDRESSES_EMAILS=(list, []),
+    STOCK_LIMIT_THRESHOLD=(int, None),
+    TAX_AMOUNT=(int, 0),
 )
 
 # read environ variables from .env file
@@ -121,7 +128,10 @@ INSTALLED_APPS = [
     'django_js_reverse',
     'webpack_loader',
     'django_celery_results',
+    'dal',
+    'dal_select2',
     'health',
+    'common',
     'user_management',
     'user_profile',
     'storages',
@@ -310,6 +320,9 @@ if DEBUG:
         'exports': {
             'BACKEND': 'django.core.files.storage.FileSystemStorage',
         },
+        'logistics': {
+            'BACKEND': 'django.core.files.storage.FileSystemStorage',
+        },
         'staticfiles': {
             'BACKEND': 'django.contrib.staticfiles.storage.StaticFilesStorage',
         },
@@ -328,7 +341,16 @@ else:
             'BACKEND': 'storages.backends.s3.S3Storage',
             'OPTIONS': {
                 'bucket_name': env('DATA_STORAGE_BUCKET_NAME'),
-                'location': env('DATA_STORAGE_PREFIX'),
+                'location': 'exports',
+                'endpoint_url': env('DATA_STORAGE_ENDPOINT_URL'),
+                'querystring_expire': 60,
+            },
+        },
+        'logistics': {
+            'BACKEND': 'storages.backends.s3.S3Storage',
+            'OPTIONS': {
+                'bucket_name': env('DATA_STORAGE_BUCKET_NAME'),
+                'location': 'logistics',
                 'endpoint_url': env('DATA_STORAGE_ENDPOINT_URL'),
                 'querystring_expire': 60,
             },
@@ -419,6 +441,7 @@ ORIAN_API_TOKEN = env('ORIAN_API_TOKEN')
 ORIAN_CONSIGNEE = env('ORIAN_CONSIGNEE')
 ORIAN_ID_PREFIX = env('ORIAN_ID_PREFIX')
 ORIAN_MESSAGE_TIMEZONE_NAME = env('ORIAN_MESSAGE_TIMEZONE_NAME')
+ORIAN_DUMMY_CUSTOMER_PLATFORM_ID = env('ORIAN_DUMMY_CUSTOMER_PLATFORM_ID')
 ORIAN_DUMMY_CUSTOMER_COMPANY_STREET = env('ORIAN_DUMMY_CUSTOMER_COMPANY_STREET')
 ORIAN_DUMMY_CUSTOMER_COMPANY_STREET_NUMBER = env(
     'ORIAN_DUMMY_CUSTOMER_COMPANY_STREET_NUMBER'
@@ -432,6 +455,24 @@ ORIAN_RABBITMQ_PORT = env('ORIAN_RABBITMQ_PORT')
 ORIAN_RABBITMQ_VIRTUAL_HOST = env('ORIAN_RABBITMQ_VIRTUAL_HOST')
 ORIAN_RABBITMQ_USER = env('ORIAN_RABBITMQ_USER')
 ORIAN_RABBITMQ_PASSWORD = env('ORIAN_RABBITMQ_PASSWORD')
+ORIAN_SFTP_HOST = env('ORIAN_SFTP_HOST')
+ORIAN_SFTP_PORT = env('ORIAN_SFTP_PORT')
+ORIAN_SFTP_USER = env('ORIAN_SFTP_USER')
+# remove prefix from sftp password setting to support strings starting with
+# '$'. this can be done with `escape_proxy`, but may affect existing values
+# containing dollar signs
+PREFIXED_ORIAN_SFTP_PASSWORD = env('ORIAN_SFTP_PASSWORD')
+if PREFIXED_ORIAN_SFTP_PASSWORD:
+    ORIAN_SFTP_PASSWORD = PREFIXED_ORIAN_SFTP_PASSWORD.removeprefix('!')
+else:
+    ORIAN_SFTP_PASSWORD = PREFIXED_ORIAN_SFTP_PASSWORD
+ORIAN_SFTP_SNAPSHOTS_DIR = env('ORIAN_SFTP_SNAPSHOTS_DIR')
 
 CC_RECIPIENT_EMAILS = env('CC_RECIPIENT_EMAILS')
 REPLY_TO_ADDRESSES_EMAILS = env('REPLY_TO_ADDRESSES_EMAILS')
+
+# The products stock level at which
+# an alert should be triggered.
+STOCK_LIMIT_THRESHOLD = env('STOCK_LIMIT_THRESHOLD') or 0
+
+TAX_AMOUNT = env('TAX_AMOUNT') or 0

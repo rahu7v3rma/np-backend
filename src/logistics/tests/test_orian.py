@@ -1,7 +1,9 @@
 from datetime import datetime, timedelta, timezone
+from io import BytesIO
 import json
 from unittest.mock import patch
 
+from celery.exceptions import Retry
 from django.conf import settings
 from django.test import TestCase, override_settings
 import responses
@@ -18,7 +20,7 @@ from campaign.models import (
     OrderProduct,
     Organization,
 )
-from inventory.models import Brand, Product, Supplier
+from inventory.models import Brand, Product, ProductBundleItem, Supplier
 from logistics.models import (
     LogisticsCenterEnum,
     LogisticsCenterInboundReceipt,
@@ -26,6 +28,8 @@ from logistics.models import (
     LogisticsCenterMessage,
     LogisticsCenterMessageTypeEnum,
     LogisticsCenterOrderStatus,
+    LogisticsCenterStockSnapshot,
+    LogisticsCenterStockSnapshotLine,
     PurchaseOrder,
     PurchaseOrderProduct,
 )
@@ -38,10 +42,10 @@ from logistics.providers.orian import (
 )
 from logistics.tasks import (
     process_logistics_center_message,
+    process_logistics_center_snapshot,
     send_order_to_logistics_center,
     sync_product_with_logistics_center,
 )
-from services.address import format_street_line
 
 
 @override_settings(
@@ -60,8 +64,9 @@ class OrianProviderTestCase(TestCase):
         self.product_1 = Product.objects.create(
             brand=self.brand,
             supplier=self.supplier,
-            name='product 1 name',
+            name_en='product 1 name en',
             sku='1',
+            reference='1231231231231',
             cost_price=50,
             sale_price=60,
         )
@@ -320,6 +325,108 @@ class OrianProviderTestCase(TestCase):
         # result should be true since we succeeded
         self.assertEquals(result, True)
 
+        # check that the body sent to the api contains the correct data
+        self.assertEquals(len(responses.calls), 1)
+        api_request_product_data = json.loads(responses.calls[0].request.body)[
+            'DATACOLLECTION'
+        ]['DATA']
+        self.assertEquals(api_request_product_data['SKU'], self.product_1.sku)
+        # initially the name_he field has no value so the english value should
+        # be sent
+        self.assertEquals(
+            api_request_product_data['SKUDESCRIPTION'], 'product 1 name en'
+        )
+        self.assertEquals(api_request_product_data['SKUSHORTDESC'], 'product 1 name en')
+        self.assertEquals(
+            api_request_product_data['MANUFACTURERSKU'], self.product_1.reference
+        )
+
+        # set the hebrew name
+        self.product_1.name_he = 'product 1 name he'
+        self.product_1.save(update_fields=['name_he'])
+        self.product_1.refresh_from_db()
+
+        result = add_or_update_product(self.product_1)
+
+        # result should be true since we succeeded
+        self.assertEquals(result, True)
+
+        # check that the body sent to the api contains the correct data
+        self.assertEquals(len(responses.calls), 2)
+        api_request_product_data = json.loads(responses.calls[1].request.body)[
+            'DATACOLLECTION'
+        ]['DATA']
+        self.assertEquals(api_request_product_data['SKU'], self.product_1.sku)
+        # now the hebrew name should be sent
+        self.assertEquals(
+            api_request_product_data['SKUDESCRIPTION'], 'product 1 name he'
+        )
+        self.assertEquals(api_request_product_data['SKUSHORTDESC'], 'product 1 name he')
+        self.assertEquals(
+            api_request_product_data['MANUFACTURERSKU'], self.product_1.reference
+        )
+
+        # set the hebrew name to a value with quotes and apostophes
+        self.product_1.name_he = 'product 1 n\'a`m"e he'
+        self.product_1.save(update_fields=['name_he'])
+        self.product_1.refresh_from_db()
+
+        result = add_or_update_product(self.product_1)
+
+        # result should be true since we succeeded
+        self.assertEquals(result, True)
+
+        # check that the body sent to the api contains the correct data
+        self.assertEquals(len(responses.calls), 3)
+        api_request_product_data = json.loads(responses.calls[2].request.body)[
+            'DATACOLLECTION'
+        ]['DATA']
+        self.assertEquals(api_request_product_data['SKU'], self.product_1.sku)
+        # the name should be sent without apostrophes and quotes
+        self.assertEquals(
+            api_request_product_data['SKUDESCRIPTION'], 'product 1 name he'
+        )
+        self.assertEquals(api_request_product_data['SKUSHORTDESC'], 'product 1 name he')
+        self.assertEquals(
+            api_request_product_data['MANUFACTURERSKU'], self.product_1.reference
+        )
+
+        # set the hebrew name to a very long value
+        self.product_1.name_he = (
+            'product 1 name he123456789012345678901234567890123456789012345678'
+            '90123456789012345678901234567890123456789012345678901234567890123'
+            '45678901234567890123456789012345678901234567890123456789012345678'
+            '90123456789012345678901234567890123456789012345678901234567890123'
+            '4567890'
+        )
+        self.product_1.save(update_fields=['name_he'])
+        self.product_1.refresh_from_db()
+
+        result = add_or_update_product(self.product_1)
+
+        # result should be true since we succeeded
+        self.assertEquals(result, True)
+
+        # check that the body sent to the api contains the correct data
+        self.assertEquals(len(responses.calls), 4)
+        api_request_product_data = json.loads(responses.calls[3].request.body)[
+            'DATACOLLECTION'
+        ]['DATA']
+        self.assertEquals(api_request_product_data['SKU'], self.product_1.sku)
+        # trimmed versions of the product name should be sent, according to
+        # orian data definitions
+        self.assertEquals(len(api_request_product_data['SKUDESCRIPTION']), 255)
+        self.assertEquals(
+            api_request_product_data['SKUDESCRIPTION'], self.product_1.name_he[:255]
+        )
+        self.assertEquals(len(api_request_product_data['SKUSHORTDESC']), 150)
+        self.assertEquals(
+            api_request_product_data['SKUSHORTDESC'], self.product_1.name_he[:150]
+        )
+        self.assertEquals(
+            api_request_product_data['MANUFACTURERSKU'], self.product_1.reference
+        )
+
     @responses.activate
     def test_add_or_update_inbound_failure(self):
         responses.add(
@@ -410,8 +517,12 @@ class OrianProviderTestCase(TestCase):
             status=200,  # orian responds with status 200 even with errors
         )
 
+        # fetch the order so manager annotated fields are included
+        order = Order.objects.get(pk=self.order_1.pk)
         result = add_or_update_outbound(
-            Order.objects.get(pk=self.order_1.pk), datetime.now()
+            order,
+            order.ordered_products(),
+            datetime.now(),
         )
 
         # result should be false since the mock api responded with an error
@@ -432,8 +543,12 @@ class OrianProviderTestCase(TestCase):
             status=200,  # orian responds with status 200 even with errors
         )
 
+        # fetch the order so manager annotated fields are included
+        order = Order.objects.get(pk=self.order_1.pk)
         result = add_or_update_outbound(
-            Order.objects.get(pk=self.order_1.pk), datetime.now()
+            order,
+            order.ordered_products(),
+            datetime.now(),
         )
 
         # result should be true since we succeeded
@@ -451,11 +566,11 @@ class OrianProviderTestCase(TestCase):
         api_request_contact = api_request_body_json['CONTACT']
         self.assertEquals(
             api_request_contact['STREET1'],
-            format_street_line(
-                self.order_1.delivery_street,
-                self.order_1.delivery_street_number,
-                self.order_1.delivery_apartment_number,
-            ),
+            f'{self.order_1.delivery_street} {self.order_1.delivery_street_number}',
+        )
+        self.assertEquals(
+            api_request_contact['STREET2'],
+            f'דירה {self.order_1.delivery_apartment_number}',
         )
         self.assertEquals(api_request_contact['CITY'], self.order_1.delivery_city)
         self.assertEquals(api_request_contact['CONTACT1NAME'], self.order_1.full_name)
@@ -483,7 +598,7 @@ class OrianProviderTestCase(TestCase):
         self.assertEquals(api_request_lines[0]['SKU'], self.product_1.sku)
         self.assertEquals(
             api_request_lines[0]['QTYORIGINAL'],
-            self.order_1.orderproduct_set.all()[0].quantity,
+            self.order_1.ordered_products()[0]['quantity'],
         )
 
     @responses.activate
@@ -501,8 +616,12 @@ class OrianProviderTestCase(TestCase):
             status=200,  # orian responds with status 200 even with errors
         )
 
+        # fetch the order so manager annotated fields are included
+        order = Order.objects.get(pk=self.order_2.pk)
         result = add_or_update_outbound(
-            Order.objects.get(pk=self.order_2.pk), datetime.now()
+            order,
+            order.ordered_products(),
+            datetime.now(),
         )
 
         # result should be true since we succeeded
@@ -520,11 +639,11 @@ class OrianProviderTestCase(TestCase):
         api_request_contact = api_request_body_json['CONTACT']
         self.assertEquals(
             api_request_contact['STREET1'],
-            format_street_line(
-                self.order_2.delivery_street,
-                self.order_2.delivery_street_number,
-                self.order_2.delivery_apartment_number,
-            ),
+            f'{self.order_2.delivery_street} {self.order_2.delivery_street_number}',
+        )
+        self.assertEquals(
+            api_request_contact['STREET2'],
+            f'דירה {self.order_2.delivery_apartment_number}',
         )
         self.assertEquals(api_request_contact['CITY'], self.order_2.delivery_city)
         self.assertEquals(api_request_contact['CONTACT1NAME'], self.order_2.full_name)
@@ -552,12 +671,12 @@ class OrianProviderTestCase(TestCase):
         self.assertEquals(api_request_lines[0]['SKU'], self.product_1.sku)
         self.assertEquals(
             api_request_lines[0]['QTYORIGINAL'],
-            self.order_2.orderproduct_set.all()[0].quantity,
+            self.order_2.ordered_products()[0]['quantity'],
         )
         self.assertEquals(api_request_lines[1]['SKU'], self.product_2.sku)
         self.assertEquals(
             api_request_lines[1]['QTYORIGINAL'],
-            self.order_2.orderproduct_set.all()[1].quantity,
+            self.order_2.ordered_products()[1]['quantity'],
         )
 
     @responses.activate
@@ -575,8 +694,12 @@ class OrianProviderTestCase(TestCase):
             status=200,  # orian responds with status 200 even with errors
         )
 
+        # fetch the order so manager annotated fields are included
+        order = Order.objects.get(pk=self.order_3.pk)
         result = add_or_update_outbound(
-            Order.objects.get(pk=self.order_3.pk), datetime.now()
+            order,
+            order.ordered_products(),
+            datetime.now(),
         )
 
         # result should be true since we succeeded
@@ -599,32 +722,36 @@ class OrianProviderTestCase(TestCase):
         api_request_contact = api_request_body_json['CONTACT']
         self.assertEquals(
             api_request_contact['STREET1'],
-            format_street_line(
-                self.employee_group_2.delivery_street,
-                self.employee_group_2.delivery_street_number,
-                self.employee_group_2.delivery_apartment_number,
+            (
+                f'{self.employee_group_2.delivery_street} '
+                f'{self.employee_group_2.delivery_street_number}'
             ),
+        )
+        self.assertEquals(
+            api_request_contact['STREET2'],
+            f'דירה {self.employee_group_2.delivery_apartment_number}',
         )
         self.assertEquals(
             api_request_contact['CITY'], self.employee_group_2.delivery_city
         )
         self.assertEquals(
-            api_request_contact['CONTACT1NAME'], self.organization.manager_full_name
+            api_request_contact['CONTACT1NAME'], self.employee_2.full_name
         )
         self.assertEquals(
-            api_request_contact['CONTACT2NAME'], self.employee_2.full_name
+            api_request_contact['CONTACT2NAME'], self.organization.manager_full_name
         )
         self.assertEquals(
-            api_request_contact['CONTACT1PHONE'], self.organization.manager_phone_number
+            api_request_contact['CONTACT1PHONE'], self.employee_2.phone_number
         )
         self.assertEquals(
             api_request_contact['CONTACT2PHONE'],
-            self.employee_2.phone_number,
+            self.organization.manager_phone_number,
         )
+        self.assertEquals(api_request_contact['CONTACT1EMAIL'], self.employee_2.email)
         self.assertEquals(
-            api_request_contact['CONTACT1EMAIL'], self.organization.manager_email
+            api_request_contact['CONTACT2EMAIL'],
+            self.organization.manager_email,
         )
-        self.assertEquals(api_request_contact['CONTACT2EMAIL'], self.employee_2.email)
 
         # check that the address sent to the api is the order's address
         api_shipping_details = api_request_body_json['SHIPPINGDETAIL']
@@ -639,7 +766,7 @@ class OrianProviderTestCase(TestCase):
         self.assertEquals(api_request_lines[0]['SKU'], self.product_1.sku)
         self.assertEquals(
             api_request_lines[0]['QTYORIGINAL'],
-            self.order_3.orderproduct_set.all()[0].quantity,
+            self.order_3.ordered_products()[0]['quantity'],
         )
 
 
@@ -810,6 +937,70 @@ class SendOrderToLogisticsCenterTestCase(TestCase):
             sku='1',
             cost_price=50,
             sale_price=60,
+            product_type=Product.ProductTypeEnum.REGULAR.name,
+            product_kind=Product.ProductKindEnum.PHYSICAL.name,
+        )
+        self.product_2 = Product.objects.create(
+            brand=self.brand,
+            supplier=self.supplier,
+            name='product 2 name',
+            sku='2',
+            cost_price=70,
+            sale_price=80,
+            product_type=Product.ProductTypeEnum.SENT_BY_SUPPLIER.name,
+            product_kind=Product.ProductKindEnum.PHYSICAL.name,
+        )
+        self.product_3 = Product.objects.create(
+            brand=self.brand,
+            supplier=self.supplier,
+            name='product 3 name',
+            sku='3',
+            cost_price=90,
+            sale_price=100,
+            product_type=Product.ProductTypeEnum.REGULAR.name,
+            product_kind=Product.ProductKindEnum.MONEY.name,
+        )
+
+        self.product_4 = Product.objects.create(
+            brand=self.brand,
+            supplier=self.supplier,
+            name='product 4 name',
+            sku='4',
+            cost_price=110,
+            sale_price=120,
+            product_type=Product.ProductTypeEnum.REGULAR.name,
+            product_kind=Product.ProductKindEnum.PHYSICAL.name,
+        )
+        self.product_5 = Product.objects.create(
+            brand=self.brand,
+            supplier=self.supplier,
+            name='product 5 name',
+            sku='5',
+            cost_price=130,
+            sale_price=140,
+            product_type=Product.ProductTypeEnum.REGULAR.name,
+            product_kind=Product.ProductKindEnum.PHYSICAL.name,
+        )
+        # a bundle product
+        self.product_6 = Product.objects.create(
+            brand=self.brand,
+            supplier=self.supplier,
+            name='product 6 name',
+            sku='4,5',
+            cost_price=150,
+            sale_price=160,
+            product_type=Product.ProductTypeEnum.REGULAR.name,
+            product_kind=Product.ProductKindEnum.BUNDLE.name,
+        )
+        ProductBundleItem.objects.create(
+            bundle=self.product_6,
+            product=self.product_4,
+            quantity=1,
+        )
+        ProductBundleItem.objects.create(
+            bundle=self.product_6,
+            product=self.product_5,
+            quantity=2,
         )
 
         # create the campaign infrastructure for the orders we need
@@ -844,9 +1035,23 @@ class SendOrderToLogisticsCenterTestCase(TestCase):
             last_name='Employee 1',
             email='test1@test.test',
         )
-        employee_group_campaign_product = EmployeeGroupCampaignProduct.objects.create(
+        self.employee_group_campaign_product_1 = (
+            EmployeeGroupCampaignProduct.objects.create(
+                employee_group_campaign_id=employee_group_campaign,
+                product_id=self.product_1,
+            )
+        )
+        employee_group_campaign_product_2 = EmployeeGroupCampaignProduct.objects.create(
             employee_group_campaign_id=employee_group_campaign,
-            product_id=self.product_1,
+            product_id=self.product_2,
+        )
+        employee_group_campaign_product_3 = EmployeeGroupCampaignProduct.objects.create(
+            employee_group_campaign_id=employee_group_campaign,
+            product_id=self.product_3,
+        )
+        employee_group_campaign_product_6 = EmployeeGroupCampaignProduct.objects.create(
+            employee_group_campaign_id=employee_group_campaign,
+            product_id=self.product_6,
         )
 
         # the order we need for testing outbound
@@ -869,8 +1074,66 @@ class SendOrderToLogisticsCenterTestCase(TestCase):
         )
         OrderProduct.objects.create(
             order_id=self.order,
-            product_id=employee_group_campaign_product,
+            product_id=self.employee_group_campaign_product_1,
             quantity=1,
+        )
+
+        # another order with sent-by-supplier and money products
+        self.order_2 = Order.objects.create(
+            campaign_employee_id=CampaignEmployee.objects.get(
+                campaign=campaign, employee=employee
+            ),
+            order_date_time=datetime.now(),
+            cost_from_budget=100,
+            cost_added=0,
+            status=Order.OrderStatusEnum.PENDING.name,
+            full_name='Test name 1',
+            phone_number='0500000000',
+            additional_phone_number='050000001',
+            delivery_city='City1',
+            delivery_street='Main1',
+            delivery_street_number='1',
+            delivery_apartment_number='1',
+            delivery_additional_details='Additional 1',
+        )
+        OrderProduct.objects.create(
+            order_id=self.order_2,
+            product_id=employee_group_campaign_product_2,
+            quantity=1,
+        )
+        OrderProduct.objects.create(
+            order_id=self.order_2,
+            product_id=employee_group_campaign_product_3,
+            quantity=1,
+        )
+
+        # another order with normal and bundle items
+        self.order_3 = Order.objects.create(
+            campaign_employee_id=CampaignEmployee.objects.get(
+                campaign=campaign, employee=employee
+            ),
+            order_date_time=datetime.now(),
+            cost_from_budget=100,
+            cost_added=0,
+            status=Order.OrderStatusEnum.PENDING.name,
+            full_name='Test name 1',
+            phone_number='0500000000',
+            additional_phone_number='050000001',
+            delivery_city='City1',
+            delivery_street='Main1',
+            delivery_street_number='1',
+            delivery_apartment_number='1',
+            delivery_additional_details='Additional 1',
+        )
+        OrderProduct.objects.create(
+            order_id=self.order_3,
+            product_id=self.employee_group_campaign_product_1,
+            quantity=1,
+        )
+        OrderProduct.objects.create(
+            order_id=self.order_3,
+            product_id=employee_group_campaign_product_6,
+            quantity=2,
         )
 
     @responses.activate
@@ -888,7 +1151,7 @@ class SendOrderToLogisticsCenterTestCase(TestCase):
             status=200,  # orian responds with status 200 even with errors
         )
 
-        with self.assertRaises(Exception):
+        with self.assertRaises(Retry):
             send_order_to_logistics_center.apply_async((self.order.pk,))
 
     @responses.activate
@@ -918,7 +1181,7 @@ class SendOrderToLogisticsCenterTestCase(TestCase):
             status=200,  # orian responds with status 200 even with errors
         )
 
-        with self.assertRaises(Exception):
+        with self.assertRaises(Retry):
             send_order_to_logistics_center.apply_async((self.order.pk,))
 
     @responses.activate
@@ -956,7 +1219,7 @@ class SendOrderToLogisticsCenterTestCase(TestCase):
         send_order_to_logistics_center.apply_async((self.order.pk,))
 
         # each mock should have been called once
-        self.assertEquals(len(dummy_company_api_mock.calls), 1)
+        self.assertEquals(len(dummy_company_api_mock.calls), 0)
         self.assertEquals(len(outbound_api_mock.calls), 1)
 
         # the status field was set to sent to logistics center
@@ -965,6 +1228,135 @@ class SendOrderToLogisticsCenterTestCase(TestCase):
             self.order.status,
             Order.OrderStatusEnum.SENT_TO_LOGISTIC_CENTER.name,
         )
+
+    @responses.activate
+    @override_settings(ORIAN_MESSAGE_TIMEZONE_NAME='UTC')
+    def test_ignore_order_products_sent_by_supplier_money(self):
+        dummy_company_api_mock = responses.add(
+            responses.POST,
+            f'{settings.ORIAN_BASE_URL}/Company',
+            json={
+                'status': 'SUCCSESS',
+                'MessageID': None,
+                'Note': 'Company Created/Updated',
+                'errorCode': None,
+                'ErrorMessage': None,
+            },
+            status=200,  # orian responds with status 200 even with errors
+        )
+        outbound_api_mock = responses.add(
+            responses.POST,
+            f'{settings.ORIAN_BASE_URL}/Outbound',
+            json={
+                'status': 'SUCCSESS',
+                'MessageID': None,
+                'Note': 'Outbound Created/Updated',
+                'errorCode': None,
+                'ErrorMessage': None,
+            },
+            status=200,  # orian responds with status 200 even with errors
+        )
+
+        # the status field should be pending
+        self.order_2.refresh_from_db()
+        self.assertEquals(self.order_2.status, Order.OrderStatusEnum.PENDING.name)
+
+        send_order_to_logistics_center.apply_async((self.order_2.pk,))
+
+        # mocks should not have been called since no order product should be
+        # sent to the logistics provider
+        self.assertEquals(len(dummy_company_api_mock.calls), 0)
+        self.assertEquals(len(outbound_api_mock.calls), 0)
+
+        # the status field should still be pending
+        self.order_2.refresh_from_db()
+        self.assertEquals(self.order_2.status, Order.OrderStatusEnum.PENDING.name)
+
+        # add a regular physical product to the order
+        OrderProduct.objects.create(
+            order_id=self.order_2,
+            product_id=self.employee_group_campaign_product_1,
+            quantity=1,
+        )
+        self.order_2.refresh_from_db()
+
+        send_order_to_logistics_center.apply_async((self.order_2.pk,))
+
+        # each mock should have been called once now
+        self.assertEquals(len(dummy_company_api_mock.calls), 0)
+        self.assertEquals(len(outbound_api_mock.calls), 1)
+
+        # the status field was set to sent to logistics center
+        self.order_2.refresh_from_db()
+        self.assertEquals(
+            self.order_2.status,
+            Order.OrderStatusEnum.SENT_TO_LOGISTIC_CENTER.name,
+        )
+
+        # only the regular physical product should have been sent to the
+        # provider
+        api_request_lines = json.loads(outbound_api_mock.calls[0].request.body)[
+            'DATACOLLECTION'
+        ]['DATA']['LINES']['LINE']
+        self.assertEquals(len(api_request_lines), 1)
+        self.assertEquals(api_request_lines[0]['SKU'], self.product_1.sku)
+
+    @responses.activate
+    @override_settings(ORIAN_MESSAGE_TIMEZONE_NAME='UTC')
+    def test_order_bundle_products(self):
+        dummy_company_api_mock = responses.add(
+            responses.POST,
+            f'{settings.ORIAN_BASE_URL}/Company',
+            json={
+                'status': 'SUCCSESS',
+                'MessageID': None,
+                'Note': 'Company Created/Updated',
+                'errorCode': None,
+                'ErrorMessage': None,
+            },
+            status=200,  # orian responds with status 200 even with errors
+        )
+        outbound_api_mock = responses.add(
+            responses.POST,
+            f'{settings.ORIAN_BASE_URL}/Outbound',
+            json={
+                'status': 'SUCCSESS',
+                'MessageID': None,
+                'Note': 'Outbound Created/Updated',
+                'errorCode': None,
+                'ErrorMessage': None,
+            },
+            status=200,  # orian responds with status 200 even with errors
+        )
+
+        # the status field should be pending
+        self.order_3.refresh_from_db()
+        self.assertEquals(self.order_3.status, Order.OrderStatusEnum.PENDING.name)
+
+        send_order_to_logistics_center.apply_async((self.order_3.pk,))
+
+        # each mock should have been called once
+        self.assertEquals(len(dummy_company_api_mock.calls), 0)
+        self.assertEquals(len(outbound_api_mock.calls), 1)
+
+        # the status field was set to sent to logistics center
+        self.order_3.refresh_from_db()
+        self.assertEquals(
+            self.order_3.status,
+            Order.OrderStatusEnum.SENT_TO_LOGISTIC_CENTER.name,
+        )
+
+        # bundled products should have been sent and not the bundle product
+        api_request_lines = json.loads(outbound_api_mock.calls[0].request.body)[
+            'DATACOLLECTION'
+        ]['DATA']['LINES']['LINE']
+        self.assertEquals(len(api_request_lines), 3)
+        self.assertEquals(api_request_lines[0]['SKU'], self.product_1.sku)
+        self.assertEquals(api_request_lines[0]['QTYORIGINAL'], 1)
+        self.assertEquals(api_request_lines[1]['SKU'], self.product_4.sku)
+        self.assertEquals(api_request_lines[1]['QTYORIGINAL'], 2)
+        self.assertEquals(api_request_lines[2]['SKU'], self.product_5.sku)
+        self.assertEquals(api_request_lines[2]['QTYORIGINAL'], 4)
 
 
 @override_settings(
@@ -1004,8 +1396,8 @@ class SyncProductWithLogisticsCenterTestCase(TestCase):
             status=200,  # orian responds with status 200 even with errors
         )
 
-        with self.assertRaises(Exception):
-            sync_product_with_logistics_center.apply_async((self.order.pk,))
+        with self.assertRaises(Retry):
+            sync_product_with_logistics_center.apply_async((self.product_1.pk,))
 
     @responses.activate
     @override_settings(ORIAN_MESSAGE_TIMEZONE_NAME='UTC')
@@ -1385,21 +1777,26 @@ class ProcessLogisticsCenterInboundReceiptMessageTestCase(TestCase):
     def test_message_not_found(self):
         # the task should raise errors if any occur that cannot be handled so
         # we know it is failing
-        with self.assertRaises(LogisticsCenterMessage.DoesNotExist):
+        with self.assertRaises(Retry) as ex_retry:
             process_logistics_center_message.apply_async((123,))
+        self.assertTrue(
+            isinstance(ex_retry.exception.exc, LogisticsCenterMessage.DoesNotExist)
+        )
 
     def test_invalid_message(self):
         # the task should raise errors if any occur that cannot be handled so
         # we know it is failing
-        with self.assertRaises(KeyError):
+        with self.assertRaises(Retry) as ex_retry:
             process_logistics_center_message.apply_async(
                 (self.logistics_center_message_invalid_1.pk,)
             )
+        self.assertTrue(isinstance(ex_retry.exception.exc, KeyError))
 
-        with self.assertRaises(KeyError):
+        with self.assertRaises(Retry) as ex_retry:
             process_logistics_center_message.apply_async(
                 (self.logistics_center_message_invalid_2.pk,)
             )
+        self.assertTrue(isinstance(ex_retry.exception.exc, KeyError))
 
     def test_no_receipt_lines(self):
         process_logistics_center_message.apply_async(
@@ -1416,10 +1813,13 @@ class ProcessLogisticsCenterInboundReceiptMessageTestCase(TestCase):
         self.assertEquals(len(LogisticsCenterInboundReceiptLine.objects.all()), 0)
 
     def test_order_id_not_found(self):
-        with self.assertRaises(PurchaseOrderProduct.DoesNotExist):
+        with self.assertRaises(Retry) as ex_retry:
             process_logistics_center_message.apply_async(
                 (self.logistics_center_message_non_existing_order.pk,)
             )
+        self.assertTrue(
+            isinstance(ex_retry.exception.exc, PurchaseOrderProduct.DoesNotExist)
+        )
 
         # a receipt was still created
         self.assertEquals(len(LogisticsCenterInboundReceipt.objects.all()), 1)
@@ -1784,27 +2184,33 @@ class ProcessLogisticsCenterOrderStatusChangeMessageTestCase(TestCase):
     def test_message_not_found(self):
         # the task should raise errors if any occur that cannot be handled so
         # we know it is failing
-        with self.assertRaises(LogisticsCenterMessage.DoesNotExist):
+        with self.assertRaises(Retry) as ex_retry:
             process_logistics_center_message.apply_async((123,))
+        self.assertTrue(
+            isinstance(ex_retry.exception.exc, LogisticsCenterMessage.DoesNotExist)
+        )
 
     def test_invalid_message(self):
         # the task should raise errors if any occur that cannot be handled so
         # we know it is failing
-        with self.assertRaises(KeyError):
+        with self.assertRaises(Retry) as ex_retry:
             process_logistics_center_message.apply_async(
                 (self.logistics_center_message_invalid_1.pk,)
             )
+        self.assertTrue(isinstance(ex_retry.exception.exc, KeyError))
 
-        with self.assertRaises(KeyError):
+        with self.assertRaises(Retry) as ex_retry:
             process_logistics_center_message.apply_async(
                 (self.logistics_center_message_invalid_2.pk,)
             )
+        self.assertTrue(isinstance(ex_retry.exception.exc, KeyError))
 
     def test_order_id_not_found(self):
-        with self.assertRaises(Order.DoesNotExist):
+        with self.assertRaises(Retry) as ex_retry:
             process_logistics_center_message.apply_async(
                 (self.logistics_center_message_non_existing_order.pk,)
             )
+        self.assertTrue(isinstance(ex_retry.exception.exc, Order.DoesNotExist))
 
         # no order status records should have been created
         self.assertEquals(len(LogisticsCenterOrderStatus.objects.all()), 0)
@@ -2000,7 +2406,9 @@ class ProcessLogisticsCenterShipOrderMessageTestCase(TestCase):
                                 'CONSIGNEE': 'NKS',
                                 'ORDERID': 'unknown',
                                 'ORDERTYPE': 'CUSTOMER',
-                                'TARGETCOMPANY': _platform_id_to_orian_id(-999),
+                                'TARGETCOMPANY': _platform_id_to_orian_id(
+                                    settings.ORIAN_DUMMY_CUSTOMER_PLATFORM_ID
+                                ),
                                 'COMPANYTYPE': 'CUSTOMER',
                                 'STATUS': 'SHIPPED',
                                 'SHIPPEDDATE': '8/1/2024 12:00:00 PM',
@@ -2021,7 +2429,9 @@ class ProcessLogisticsCenterShipOrderMessageTestCase(TestCase):
                                 'CONSIGNEE': 'NKS',
                                 'ORDERID': Order.objects.get(pk=self.order.pk).order_id,
                                 'ORDERTYPE': 'CUSTOMER',
-                                'TARGETCOMPANY': _platform_id_to_orian_id(-999),
+                                'TARGETCOMPANY': _platform_id_to_orian_id(
+                                    settings.ORIAN_DUMMY_CUSTOMER_PLATFORM_ID
+                                ),
                                 'COMPANYTYPE': 'CUSTOMER',
                                 'STATUS': 'SHIPPED',
                                 'SHIPPEDDATE': '8/1/2024 12:00:00 PM',
@@ -2042,7 +2452,9 @@ class ProcessLogisticsCenterShipOrderMessageTestCase(TestCase):
                                 'CONSIGNEE': 'NKS',
                                 'ORDERID': Order.objects.get(pk=self.order.pk).order_id,
                                 'ORDERTYPE': 'CUSTOMER',
-                                'TARGETCOMPANY': _platform_id_to_orian_id(-999),
+                                'TARGETCOMPANY': _platform_id_to_orian_id(
+                                    settings.ORIAN_DUMMY_CUSTOMER_PLATFORM_ID
+                                ),
                                 'COMPANYTYPE': 'CUSTOMER',
                                 'STATUS': 'SHIPPEDAGAIN',
                                 'SHIPPEDDATE': '8/1/2024 06:00:00 AM',
@@ -2063,7 +2475,9 @@ class ProcessLogisticsCenterShipOrderMessageTestCase(TestCase):
                                 'CONSIGNEE': 'NKS',
                                 'ORDERID': _platform_id_to_orian_id(self.order.pk),
                                 'ORDERTYPE': 'CUSTOMER',
-                                'TARGETCOMPANY': _platform_id_to_orian_id(-999),
+                                'TARGETCOMPANY': _platform_id_to_orian_id(
+                                    settings.ORIAN_DUMMY_CUSTOMER_PLATFORM_ID
+                                ),
                                 'COMPANYTYPE': 'CUSTOMER',
                                 'STATUS': 'SHIPPED',
                                 'SHIPPEDDATE': '8/1/2024 12:00:00 PM',
@@ -2077,27 +2491,33 @@ class ProcessLogisticsCenterShipOrderMessageTestCase(TestCase):
     def test_message_not_found(self):
         # the task should raise errors if any occur that cannot be handled so
         # we know it is failing
-        with self.assertRaises(LogisticsCenterMessage.DoesNotExist):
+        with self.assertRaises(Retry) as ex_retry:
             process_logistics_center_message.apply_async((123,))
+        self.assertTrue(
+            isinstance(ex_retry.exception.exc, LogisticsCenterMessage.DoesNotExist)
+        )
 
     def test_invalid_message(self):
         # the task should raise errors if any occur that cannot be handled so
         # we know it is failing
-        with self.assertRaises(KeyError):
+        with self.assertRaises(Retry) as ex_retry:
             process_logistics_center_message.apply_async(
                 (self.logistics_center_message_invalid_1.pk,)
             )
+        self.assertTrue(isinstance(ex_retry.exception.exc, KeyError))
 
-        with self.assertRaises(KeyError):
+        with self.assertRaises(Retry) as ex_retry:
             process_logistics_center_message.apply_async(
                 (self.logistics_center_message_invalid_2.pk,)
             )
+        self.assertTrue(isinstance(ex_retry.exception.exc, KeyError))
 
     def test_order_id_not_found(self):
-        with self.assertRaises(Order.DoesNotExist):
+        with self.assertRaises(Retry) as ex_retry:
             process_logistics_center_message.apply_async(
-                (self.logistics_center_message_non_existing_order.pk,)
+                (self.logistics_center_message_non_existing_order.pk,),
             )
+        self.assertTrue(isinstance(ex_retry.exception.exc, Order.DoesNotExist))
 
         # no order status records should have been created
         self.assertEquals(len(LogisticsCenterOrderStatus.objects.all()), 0)
@@ -2166,3 +2586,372 @@ class ProcessLogisticsCenterShipOrderMessageTestCase(TestCase):
         # logistics center status should have been set
         self.order.refresh_from_db()
         self.assertEquals(self.order.logistics_center_status, 'SHIPPED')
+
+
+class ProcessLogisticsCenterSnapshotTestCase(TestCase):
+    def setUp(self):
+        self.supplier = Supplier.objects.create(
+            name='supplier name',
+        )
+        self.brand = Brand.objects.create(
+            name='brand name',
+        )
+        self.product_1 = Product.objects.create(
+            brand=self.brand,
+            supplier=self.supplier,
+            name='product 1 name',
+            sku='1',
+            cost_price=50,
+            sale_price=60,
+        )
+        self.product_2 = Product.objects.create(
+            brand=self.brand,
+            supplier=self.supplier,
+            name='product 2 name',
+            sku='2',
+            cost_price=70,
+            sale_price=80,
+        )
+
+        # test snapshot files
+        self.logistics_center_snapshot_no_lines = (
+            b'<DATACOLLECTION><ANYNONDATAVALUE/></DATACOLLECTION>'
+        )
+        self.logistics_center_snapshot_single_line = (
+            b'<DATACOLLECTION><DATA><CONSIGNEE>NKS</CONSIGNEE><SKU>1</SKU>'
+            b'<QTY>1.0000</QTY></DATA></DATACOLLECTION>'
+        )
+        self.logistics_center_snapshot_multi_line = (
+            b'<DATACOLLECTION><DATA><CONSIGNEE>NKS</CONSIGNEE><SKU>1</SKU>'
+            b'<QTY>2.0000</QTY></DATA><DATA><CONSIGNEE>NKS</CONSIGNEE>'
+            b'<SKU>2</SKU><QTY>3.0000</QTY></DATA><DATA>'
+            b'<CONSIGNEE>NKS</CONSIGNEE><SKU>3</SKU><QTY>15.0000</QTY></DATA>'
+            b'</DATACOLLECTION>'
+        )
+        self.logistics_center_snapshot_updates_1 = (
+            b'<DATACOLLECTION><DATA><CONSIGNEE>NKS</CONSIGNEE><SKU>1</SKU>'
+            b'<QTY>4.0000</QTY></DATA><DATA><CONSIGNEE>NKS</CONSIGNEE>'
+            b'<SKU>2</SKU><QTY>5.0000</QTY></DATA></DATACOLLECTION>'
+        )
+        self.logistics_center_snapshot_updates_2 = (
+            b'<DATACOLLECTION><DATA><CONSIGNEE>NKS</CONSIGNEE><SKU>2</SKU>'
+            b'<QTY>6.0000</QTY></DATA></DATACOLLECTION>'
+        )
+        self.logistics_center_snapshot_updates_3 = (
+            b'<DATACOLLECTION><DATA><CONSIGNEE>NKS</CONSIGNEE><SKU>1</SKU>'
+            b'<QTY>7.0000</QTY></DATA><DATA><CONSIGNEE>NKS</CONSIGNEE>'
+            b'<SKU>2</SKU><QTY>8.0000</QTY></DATA></DATACOLLECTION>'
+        )
+
+    @patch('django.core.files.storage.FileSystemStorage.exists')
+    def test_snapshot_file_not_found(self, mock_exists):
+        mock_exists.return_value = False
+
+        process_result = process_logistics_center_snapshot.apply_async(
+            (
+                LogisticsCenterEnum.ORIAN.name,
+                'non_existing_path.xml',
+                datetime.now(),
+            )
+        )
+
+        # processing was not successful
+        self.assertEquals(process_result.result, False)
+
+        # no stock snapshots were created
+        self.assertEquals(len(LogisticsCenterStockSnapshot.objects.all()), 0)
+
+    @patch('django.core.files.storage.FileSystemStorage.exists')
+    @patch('django.core.files.storage.FileSystemStorage.open')
+    def test_empty_snapshot_file(self, mock_open, mock_exists):
+        mock_exists.return_value = True
+        mock_open.return_value = BytesIO(self.logistics_center_snapshot_no_lines)
+
+        process_result = process_logistics_center_snapshot.apply_async(
+            (
+                LogisticsCenterEnum.ORIAN.name,
+                'no_lines_path.xml',
+                datetime.now(),
+            )
+        )
+
+        # processing was successful
+        self.assertEquals(process_result.result, True)
+
+        # one stock snapshot was created
+        self.assertEquals(len(LogisticsCenterStockSnapshot.objects.all()), 1)
+        self.assertEquals(
+            LogisticsCenterStockSnapshot.objects.first().snapshot_file_path,
+            'no_lines_path.xml',
+        )
+
+        # no stock snapshot lines were created
+        self.assertEquals(len(LogisticsCenterStockSnapshotLine.objects.all()), 0)
+
+    @patch('django.core.files.storage.FileSystemStorage.exists')
+    @patch('django.core.files.storage.FileSystemStorage.open')
+    def test_snapshot_file_single_line(self, mock_open, mock_exists):
+        mock_exists.return_value = True
+        mock_open.return_value = BytesIO(self.logistics_center_snapshot_single_line)
+
+        process_result = process_logistics_center_snapshot.apply_async(
+            (
+                LogisticsCenterEnum.ORIAN.name,
+                'single_line_path.xml',
+                datetime.now(),
+            )
+        )
+
+        # processing was successful
+        self.assertEquals(process_result.result, True)
+
+        # one stock snapshot was created
+        self.assertEquals(len(LogisticsCenterStockSnapshot.objects.all()), 1)
+        stock_1 = LogisticsCenterStockSnapshot.objects.first()
+        self.assertEquals(stock_1.snapshot_file_path, 'single_line_path.xml')
+
+        # one stock snapshot line was created
+        self.assertEquals(len(LogisticsCenterStockSnapshotLine.objects.all()), 1)
+        stock_line_1 = LogisticsCenterStockSnapshotLine.objects.first()
+        self.assertEquals(stock_line_1.stock_snapshot, stock_1)
+        self.assertEquals(stock_line_1.sku, '1')
+        self.assertEquals(stock_line_1.quantity, 1)
+
+        # the correct product was linked to the stock snapshot line
+        self.product_1.refresh_from_db()
+        self.product_2.refresh_from_db()
+        self.assertEquals(self.product_1.logistics_snapshot_stock_line, stock_line_1)
+        self.assertEquals(self.product_2.logistics_snapshot_stock_line, None)
+
+    @patch('django.core.files.storage.FileSystemStorage.exists')
+    @patch('django.core.files.storage.FileSystemStorage.open')
+    def test_snapshot_file_multi_line(self, mock_open, mock_exists):
+        mock_exists.return_value = True
+        mock_open.return_value = BytesIO(self.logistics_center_snapshot_multi_line)
+
+        process_result = process_logistics_center_snapshot.apply_async(
+            (
+                LogisticsCenterEnum.ORIAN.name,
+                'multi_line_path.xml',
+                datetime.now(),
+            )
+        )
+
+        # processing was successful
+        self.assertEquals(process_result.result, True)
+
+        # one stock snapshot was created
+        self.assertEquals(len(LogisticsCenterStockSnapshot.objects.all()), 1)
+        stock_1 = LogisticsCenterStockSnapshot.objects.first()
+        self.assertEquals(stock_1.snapshot_file_path, 'multi_line_path.xml')
+
+        # three stock snapshot lines were created
+        self.assertEquals(len(LogisticsCenterStockSnapshotLine.objects.all()), 3)
+        stock_line_1 = LogisticsCenterStockSnapshotLine.objects.all()[0]
+        self.assertEquals(stock_line_1.stock_snapshot, stock_1)
+        self.assertEquals(stock_line_1.sku, '1')
+        self.assertEquals(stock_line_1.quantity, 2)
+        stock_line_2 = LogisticsCenterStockSnapshotLine.objects.all()[1]
+        self.assertEquals(stock_line_2.stock_snapshot, stock_1)
+        self.assertEquals(stock_line_2.sku, '2')
+        self.assertEquals(stock_line_2.quantity, 3)
+        stock_line_3 = LogisticsCenterStockSnapshotLine.objects.all()[2]
+        self.assertEquals(stock_line_3.stock_snapshot, stock_1)
+        self.assertEquals(stock_line_3.sku, '3')
+        self.assertEquals(stock_line_3.quantity, 15)
+
+        # the correct products were linked to the stock snapshot line
+        self.product_1.refresh_from_db()
+        self.product_2.refresh_from_db()
+        self.assertEquals(self.product_1.logistics_snapshot_stock_line, stock_line_1)
+        self.assertEquals(self.product_2.logistics_snapshot_stock_line, stock_line_2)
+
+    @patch('django.core.files.storage.FileSystemStorage.exists')
+    @patch('django.core.files.storage.FileSystemStorage.open')
+    def test_snapshot_file_updates(self, mock_open, mock_exists):
+        mock_exists.return_value = True
+        mock_open.return_value = BytesIO(self.logistics_center_snapshot_updates_1)
+
+        first_snapshot_date_time = datetime.now()
+        process_result = process_logistics_center_snapshot.apply_async(
+            (
+                LogisticsCenterEnum.ORIAN.name,
+                'updates_1_path.xml',
+                first_snapshot_date_time,
+            )
+        )
+
+        # processing was successful
+        self.assertEquals(process_result.result, True)
+
+        # one stock snapshot was created
+        self.assertEquals(len(LogisticsCenterStockSnapshot.objects.all()), 1)
+        stock_1 = LogisticsCenterStockSnapshot.objects.first()
+        self.assertEquals(stock_1.snapshot_file_path, 'updates_1_path.xml')
+
+        # two stock snapshot lines were created
+        self.assertEquals(len(LogisticsCenterStockSnapshotLine.objects.all()), 2)
+        stock_line_1 = LogisticsCenterStockSnapshotLine.objects.all()[0]
+        self.assertEquals(stock_line_1.stock_snapshot, stock_1)
+        self.assertEquals(stock_line_1.sku, '1')
+        self.assertEquals(stock_line_1.quantity, 4)
+        stock_line_2 = LogisticsCenterStockSnapshotLine.objects.all()[1]
+        self.assertEquals(stock_line_2.stock_snapshot, stock_1)
+        self.assertEquals(stock_line_2.sku, '2')
+        self.assertEquals(stock_line_2.quantity, 5)
+
+        # the correct products were linked to the stock snapshot line
+        self.product_1.refresh_from_db()
+        self.product_2.refresh_from_db()
+        self.assertEquals(self.product_1.logistics_snapshot_stock_line, stock_line_1)
+        self.assertEquals(self.product_2.logistics_snapshot_stock_line, stock_line_2)
+
+        mock_open.return_value = BytesIO(self.logistics_center_snapshot_updates_2)
+
+        # process the second snapshot
+        process_result = process_logistics_center_snapshot.apply_async(
+            (
+                LogisticsCenterEnum.ORIAN.name,
+                'updates_2_path.xml',
+                datetime.now(),
+            )
+        )
+
+        # processing was successful
+        self.assertEquals(process_result.result, True)
+
+        # two stock snapshot should now exist
+        self.assertEquals(len(LogisticsCenterStockSnapshot.objects.all()), 2)
+        stock_1 = LogisticsCenterStockSnapshot.objects.all()[0]
+        self.assertEquals(stock_1.snapshot_file_path, 'updates_1_path.xml')
+        stock_2 = LogisticsCenterStockSnapshot.objects.all()[1]
+        self.assertEquals(stock_2.snapshot_file_path, 'updates_2_path.xml')
+
+        # three stock snapshot lines should now exist
+        self.assertEquals(len(LogisticsCenterStockSnapshotLine.objects.all()), 3)
+        stock_line_1 = LogisticsCenterStockSnapshotLine.objects.all()[0]
+        self.assertEquals(stock_line_1.stock_snapshot, stock_1)
+        self.assertEquals(stock_line_1.sku, '1')
+        self.assertEquals(stock_line_1.quantity, 4)
+        stock_line_2 = LogisticsCenterStockSnapshotLine.objects.all()[1]
+        self.assertEquals(stock_line_2.stock_snapshot, stock_1)
+        self.assertEquals(stock_line_2.sku, '2')
+        self.assertEquals(stock_line_2.quantity, 5)
+        stock_line_3 = LogisticsCenterStockSnapshotLine.objects.all()[2]
+        self.assertEquals(stock_line_3.stock_snapshot, stock_2)
+        self.assertEquals(stock_line_3.sku, '2')
+        self.assertEquals(stock_line_3.quantity, 6)
+
+        # the correct products were linked to the stock snapshot line
+        self.product_1.refresh_from_db()
+        self.product_2.refresh_from_db()
+        self.assertEquals(self.product_1.logistics_snapshot_stock_line, None)
+        self.assertEquals(self.product_2.logistics_snapshot_stock_line, stock_line_3)
+
+        mock_open.return_value = BytesIO(self.logistics_center_snapshot_updates_3)
+
+        # process the third snapshot - which has an earlier date time than the
+        # previously-processed snapshots
+        process_result = process_logistics_center_snapshot.apply_async(
+            (
+                LogisticsCenterEnum.ORIAN.name,
+                'updates_3_path.xml',
+                datetime.now() - timedelta(hours=1),
+            )
+        )
+
+        # processing was successful
+        self.assertEquals(process_result.result, True)
+
+        # three stock snapshot should now exist
+        self.assertEquals(len(LogisticsCenterStockSnapshot.objects.all()), 3)
+        stock_1 = LogisticsCenterStockSnapshot.objects.all()[0]
+        self.assertEquals(stock_1.snapshot_file_path, 'updates_1_path.xml')
+        stock_2 = LogisticsCenterStockSnapshot.objects.all()[1]
+        self.assertEquals(stock_2.snapshot_file_path, 'updates_2_path.xml')
+        stock_3 = LogisticsCenterStockSnapshot.objects.all()[2]
+        self.assertEquals(stock_3.snapshot_file_path, 'updates_3_path.xml')
+
+        # five stock snapshot lines should now exist
+        self.assertEquals(len(LogisticsCenterStockSnapshotLine.objects.all()), 5)
+        stock_line_1 = LogisticsCenterStockSnapshotLine.objects.all()[0]
+        self.assertEquals(stock_line_1.stock_snapshot, stock_1)
+        self.assertEquals(stock_line_1.sku, '1')
+        self.assertEquals(stock_line_1.quantity, 4)
+        stock_line_2 = LogisticsCenterStockSnapshotLine.objects.all()[1]
+        self.assertEquals(stock_line_2.stock_snapshot, stock_1)
+        self.assertEquals(stock_line_2.sku, '2')
+        self.assertEquals(stock_line_2.quantity, 5)
+        stock_line_3 = LogisticsCenterStockSnapshotLine.objects.all()[2]
+        self.assertEquals(stock_line_3.stock_snapshot, stock_2)
+        self.assertEquals(stock_line_3.sku, '2')
+        self.assertEquals(stock_line_3.quantity, 6)
+        stock_line_4 = LogisticsCenterStockSnapshotLine.objects.all()[3]
+        self.assertEquals(stock_line_4.stock_snapshot, stock_3)
+        self.assertEquals(stock_line_4.sku, '1')
+        self.assertEquals(stock_line_4.quantity, 7)
+        stock_line_5 = LogisticsCenterStockSnapshotLine.objects.all()[4]
+        self.assertEquals(stock_line_5.stock_snapshot, stock_3)
+        self.assertEquals(stock_line_5.sku, '2')
+        self.assertEquals(stock_line_5.quantity, 8)
+
+        # product stock snapshot lines were not updated since the last
+        # processed snapshot is an earlier-dated one
+        self.product_1.refresh_from_db()
+        self.product_2.refresh_from_db()
+        self.assertEquals(self.product_1.logistics_snapshot_stock_line, None)
+        self.assertEquals(self.product_2.logistics_snapshot_stock_line, stock_line_3)
+
+        mock_open.return_value = BytesIO(self.logistics_center_snapshot_updates_1)
+
+        # process the first snapshot - data should be updated and new stock
+        # records should not be created
+        process_result = process_logistics_center_snapshot.apply_async(
+            (
+                LogisticsCenterEnum.ORIAN.name,
+                'updates_1_path.xml',
+                first_snapshot_date_time,
+            )
+        )
+
+        # processing was successful
+        self.assertEquals(process_result.result, True)
+
+        # three stock snapshot should still exist
+        self.assertEquals(len(LogisticsCenterStockSnapshot.objects.all()), 3)
+        stock_1 = LogisticsCenterStockSnapshot.objects.all()[0]
+        self.assertEquals(stock_1.snapshot_file_path, 'updates_1_path.xml')
+        stock_2 = LogisticsCenterStockSnapshot.objects.all()[1]
+        self.assertEquals(stock_2.snapshot_file_path, 'updates_2_path.xml')
+        stock_3 = LogisticsCenterStockSnapshot.objects.all()[2]
+        self.assertEquals(stock_3.snapshot_file_path, 'updates_3_path.xml')
+
+        # five stock snapshot lines should still exist
+        self.assertEquals(len(LogisticsCenterStockSnapshotLine.objects.all()), 5)
+        stock_line_1 = LogisticsCenterStockSnapshotLine.objects.all()[0]
+        self.assertEquals(stock_line_1.stock_snapshot, stock_1)
+        self.assertEquals(stock_line_1.sku, '1')
+        self.assertEquals(stock_line_1.quantity, 4)
+        stock_line_2 = LogisticsCenterStockSnapshotLine.objects.all()[1]
+        self.assertEquals(stock_line_2.stock_snapshot, stock_1)
+        self.assertEquals(stock_line_2.sku, '2')
+        self.assertEquals(stock_line_2.quantity, 5)
+        stock_line_3 = LogisticsCenterStockSnapshotLine.objects.all()[2]
+        self.assertEquals(stock_line_3.stock_snapshot, stock_2)
+        self.assertEquals(stock_line_3.sku, '2')
+        self.assertEquals(stock_line_3.quantity, 6)
+        stock_line_4 = LogisticsCenterStockSnapshotLine.objects.all()[3]
+        self.assertEquals(stock_line_4.stock_snapshot, stock_3)
+        self.assertEquals(stock_line_4.sku, '1')
+        self.assertEquals(stock_line_4.quantity, 7)
+        stock_line_5 = LogisticsCenterStockSnapshotLine.objects.all()[4]
+        self.assertEquals(stock_line_5.stock_snapshot, stock_3)
+        self.assertEquals(stock_line_5.sku, '2')
+        self.assertEquals(stock_line_5.quantity, 8)
+
+        # product stock snapshot lines were not updated since the last
+        # processed snapshot is an earlier-dated one
+        self.product_1.refresh_from_db()
+        self.product_2.refresh_from_db()
+        self.assertEquals(self.product_1.logistics_snapshot_stock_line, None)
+        self.assertEquals(self.product_2.logistics_snapshot_stock_line, stock_line_3)

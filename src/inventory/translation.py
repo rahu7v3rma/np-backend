@@ -5,7 +5,14 @@ from inventory.models import Brand, Category, Product, Supplier, Tag
 
 
 class ProductTranslationOptions(TranslationOptions):
-    fields = ('name', 'description', 'technical_details', 'warranty', 'exchange_policy')
+    fields = (
+        'name',
+        'description',
+        'technical_details',
+        'warranty',
+        'exchange_policy',
+        'offer',
+    )
 
     # name is required in all translation languages
     required_languages = {'default': ('name',)}
@@ -18,9 +25,12 @@ class BrandTranslationOptions(TranslationOptions):
 class SupplierTranslationOptions(TranslationOptions):
     fields = ('name', 'address_city', 'address_street', 'address_street_number')
 
+    required_languages = {'default': ('name',)}
+
 
 class CategoryTranslationOptions(TranslationOptions):
     fields = ('name',)
+    required_languages = {'default': ('name',)}
 
 
 class TagTranslationOptions(TranslationOptions):
@@ -36,6 +46,7 @@ class EmployeeTranslationOptions(TranslationOptions):
         'first_name',
         'last_name',
     )
+    required_languages = {'default': ('first_name', 'last_name')}
 
 
 translator.register(Product, ProductTranslationOptions)

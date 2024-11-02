@@ -5,9 +5,12 @@ from django.core.validators import validate_email
 from django.db import models
 from django.db.models.functions import Cast, Round
 
-from campaign.models import OrderProduct
+from campaign.models import OrderProduct, QuickOfferOrderProduct
+from common.managers import ActiveObjectsManager
+from common.models import BaseModelMixin
 from lib.phone_utils import convert_phone_number_to_long_form, validate_phone_number
 from lib.storage import RandomNameImageField, RandomNameImageFieldSVG
+from logistics.models import LogisticsCenterStockSnapshotLine
 
 
 class Product(models.Model):
@@ -21,15 +24,18 @@ class Product(models.Model):
         LARGE_PRODUCT = 'Large product'
         SENT_BY_SUPPLIER = 'Sent by supplier'
 
+    class OfferTypeEnum(Enum):
+        SPECIAL_OFFER = 'Special Offer'
+        BEST_VALUE = 'Best Value'
+        LIMITED_TIME_OFFER = 'Limited Time Offer'
+        JUST_LANDED = 'Just Landed'
+        STAFF_PICK = 'Staff Pick'
+
     brand = models.ForeignKey(
         'Brand', on_delete=models.CASCADE, related_name='brand_products'
     )
     supplier = models.ForeignKey(
-        'Supplier',
-        on_delete=models.CASCADE,
-        related_name='supplier_products',
-        null=True,
-        blank=True,
+        'Supplier', on_delete=models.CASCADE, related_name='supplier_products'
     )
     reference = models.CharField(max_length=100, null=True, blank=True)
     sale_price = models.IntegerField(null=True, blank=True)
@@ -46,7 +52,7 @@ class Product(models.Model):
             (product_type.name, product_type.value) for product_type in ProductTypeEnum
         ],
     )
-    product_quantity = models.IntegerField(default=0, null=False, blank=False)
+    product_quantity = models.IntegerField(default=2147483647, null=False, blank=False)
     description = models.TextField()
     sku = models.CharField(max_length=255, unique=True)
     link = models.TextField(null=True, blank=True)
@@ -104,6 +110,58 @@ class Product(models.Model):
     exchange_policy = models.TextField(null=True, blank=True)
     categories = models.ManyToManyField('Category', through='CategoryProduct')
     tags = models.ManyToManyField('Tag', through='TagProduct')
+    alert_stock_sent = models.BooleanField(default=False)
+    logistics_snapshot_stock_line = models.ForeignKey(
+        LogisticsCenterStockSnapshotLine,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+    )
+
+    bundled_products = models.ManyToManyField('Product', through='ProductBundleItem')
+    offer = models.CharField(
+        max_length=20,
+        choices=[(o.name, o.value) for o in OfferTypeEnum],
+        blank=True,
+        null=True,
+        default=None,
+    )
+
+    def update_bundle_calculated_fields(self):
+        if self.product_kind == Product.ProductKindEnum.BUNDLE.name:
+            bundled_items = self.bundled_items.all()
+            self.supplier = bundled_items[0].product.supplier
+            self.brand = bundled_items[0].product.brand
+            self.sku = ','.join(
+                [f'{bi.product.sku}|{bi.quantity}' for bi in bundled_items]
+            )
+            self.cost_price = sum(
+                [bi.product.cost_price * bi.quantity for bi in bundled_items]
+            )
+            self.delivery_price = sum(
+                [(bi.product.delivery_price or 0) * bi.quantity for bi in bundled_items]
+            )
+            self.sale_price = sum(
+                [(bi.product.sale_price or 0) * bi.quantity for bi in bundled_items]
+            )
+            self.google_price = sum(
+                [(bi.product.google_price or 0) * bi.quantity for bi in bundled_items]
+            )
+            self.save(
+                update_fields=[
+                    'supplier',
+                    'brand',
+                    'sku',
+                    'cost_price',
+                    'delivery_price',
+                    'sale_price',
+                    'google_price',
+                ]
+            )
+        else:
+            # remove all bundled items if this is not a bundle (may have been
+            # changed now)
+            self.bundled_items.all().delete()
 
     @property
     def main_image(self):
@@ -121,7 +179,13 @@ class Product(models.Model):
         quantity = OrderProduct.objects.filter(product_id__product_id=self).aggregate(
             models.Sum('quantity')
         )
-        return quantity.get('quantity__sum') or 0
+        quick_offer = QuickOfferOrderProduct.objects.filter(product_id=self).aggregate(
+            models.Sum('quantity')
+        )
+
+        quantity = quantity.get('quantity__sum') or 0
+        quick_offer = quick_offer.get('quantity__sum') or 0
+        return quantity + quick_offer
 
     @property
     def remaining_quantity(self):
@@ -161,31 +225,44 @@ class TagProduct(models.Model):
 
 
 class ProductBundleItem(models.Model):
-    product_bundle_id = models.IntegerField()
-    product_id = models.ForeignKey(Product, on_delete=models.CASCADE)
+    # the bundle product - Product of kind BUNDLE
+    bundle = models.ForeignKey(
+        Product, on_delete=models.CASCADE, related_name='bundled_items'
+    )
+    # the bundled product - any Product included in the bundle
+    product = models.ForeignKey(
+        Product, on_delete=models.CASCADE, related_name='bundles'
+    )
+    # how many times the bundled product is included in the bundle
+    quantity = models.PositiveIntegerField()
 
 
-class Brand(models.Model):
+class Brand(BaseModelMixin):
     name = models.CharField(max_length=100)
     logo_image = RandomNameImageField(null=True, blank=True)
     suppliers = models.ManyToManyField('Supplier', through='BrandSupplier')
+
+    objects = ActiveObjectsManager()
+    all_objects = models.Manager()
 
     def __str__(self) -> str:
         return self.name
 
 
-class Supplier(models.Model):
+class Supplier(BaseModelMixin):
     name = models.CharField(max_length=100)
+    house_number = models.PositiveIntegerField(null=True, blank=True)
     address_city = models.CharField(max_length=255, null=True, blank=True)
     address_street = models.CharField(max_length=255, null=True, blank=True)
     address_street_number = models.CharField(max_length=255, null=True, blank=True)
-    email = models.CharField(
-        max_length=255, null=True, blank=True, validators=[validate_email]
-    )
+    email = models.CharField(max_length=255, validators=[validate_email])
     phone_number = models.CharField(
         max_length=255, null=True, blank=True, validators=[validate_phone_number]
     )
     brands = models.ManyToManyField('Brand', through='BrandSupplier')
+
+    objects = ActiveObjectsManager()
+    all_objects = models.Manager()
 
     def __str__(self) -> str:
         return self.name
@@ -240,7 +317,7 @@ class ShareTypeEnum(Enum):
 
 
 class Share(models.Model):
-    from campaign.models import Employee
+    from campaign.models import Employee, QuickOffer
 
     share_id = models.UUIDField(default=uuid.uuid4, editable=False, unique=True)
 
@@ -253,9 +330,16 @@ class Share(models.Model):
         on_delete=models.CASCADE,
         related_name='product_shares',
         verbose_name='Owner',
+        null=True,
+        blank=True,
     )
 
-    campaign_code = models.CharField(max_length=155, verbose_name='Campaign Code')
+    campaign_code = models.CharField(
+        max_length=155, verbose_name='Campaign Code', null=True, blank=True
+    )
+    quick_offer = models.ForeignKey(
+        QuickOffer, on_delete=models.CASCADE, null=True, blank=True
+    )
 
     products = models.ManyToManyField(
         'Product', related_name='shares', verbose_name='Products'

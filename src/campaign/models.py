@@ -6,9 +6,11 @@ from colorfield.fields import ColorField
 from django.conf import settings
 from django.contrib import admin
 from django.contrib.auth import get_user_model
+from django.core.exceptions import ValidationError
 from django.core.validators import validate_email
 from django.db import models
 from django.db.models.functions import Cast, Concat, Left
+from django.forms.models import model_to_dict
 from django.urls import reverse
 import pyotp
 
@@ -64,7 +66,10 @@ class Employee(models.Model):
     auth_id = models.CharField(max_length=255, null=True, blank=True)
     email = models.EmailField(null=True, blank=True)
     phone_number = models.CharField(
-        max_length=255, null=True, blank=True, validators=[validate_phone_number]
+        max_length=255,
+        null=True,
+        blank=True,
+        validators=[validate_phone_number],
     )
     birthday_date = models.DateField(null=True, blank=True)
     default_language = models.CharField(
@@ -92,8 +97,16 @@ class Employee(models.Model):
                 self.phone_number = formatted_phone_number
             else:
                 raise Exception(f'Invalid phone number: {self.phone_number}')
-
+        if not self.auth_id and not self.email and not self.phone_number:
+            raise Exception('Either auth_id, email or phone_number must be provided')
         return super().save(*args, **kwargs)
+
+    def clean(self):
+        """Ensure at least one of auth_id, email, or phone_number is present."""
+        if not self.auth_id and not self.email and not self.phone_number:
+            raise ValidationError(
+                'At least one of auth_id, email, or phone_number must be provided.'
+            )
 
     @property
     def full_name(self):
@@ -247,7 +260,11 @@ class CampaignEmployee(models.Model):
         unique_together = [['campaign', 'employee']]
 
     def __str__(self):
-        return f'{self.employee.full_name} | {self.campaign.name}'
+        return (
+            f'{self.employee.full_name} '
+            f'| {self.campaign.name} | '
+            f'{self.campaign.organization.name}'
+        )
 
 
 class EmployeeAuthEnum(Enum):
@@ -307,6 +324,10 @@ class EmployeeGroupCampaign(models.Model):
         COINS = 'Coins'
         CURRENCY = 'Currency'
 
+    class CheckoutLocationTypeEnum(Enum):
+        ISRAEL = 'Israel'
+        GLOBAL = 'Global'
+
     campaign = models.ForeignKey(Campaign, on_delete=models.CASCADE)
     employee_group = models.ForeignKey(EmployeeGroup, on_delete=models.CASCADE)
     budget_per_employee = models.IntegerField()
@@ -322,6 +343,14 @@ class EmployeeGroupCampaign(models.Model):
         max_length=32,
         default=CurrencyTypeEnum.CURRENCY.name,
         choices=[(currency.name, currency.value) for currency in CurrencyTypeEnum],
+    )
+    check_out_location = models.CharField(
+        max_length=32,
+        default=CheckoutLocationTypeEnum.ISRAEL.name,
+        choices=[
+            (checkoutLocation.name, checkoutLocation.value)
+            for checkoutLocation in CheckoutLocationTypeEnum
+        ],
     )
 
     @property
@@ -417,7 +446,11 @@ class Order(models.Model):
         UserModel, on_delete=models.SET_NULL, null=True, blank=True
     )
     logistics_center_status = models.CharField(max_length=16, null=True, blank=True)
-
+    country = models.CharField(max_length=100, null=True, blank=True)
+    state_code = models.CharField(max_length=100, null=True, blank=True)
+    zip_code = models.CharField(max_length=100, null=True, blank=True)
+    size = models.CharField(max_length=100, null=True, blank=True)
+    color = models.CharField(max_length=100, null=True, blank=True)
     # override the model manager so we can use `order_id` field for filters
     # and calculate the value in one central place
     objects = OrderManager()
@@ -439,9 +472,25 @@ class Order(models.Model):
 
     @admin.display(description='Products')
     def ordered_product_names(self):
-        return ', '.join(
-            [p.product_id.product_id.name for p in self.orderproduct_set.all()]
-        )
+        from inventory.models import Product
+
+        product_names = []
+        for p in self.orderproduct_set.all():
+            if (
+                p.product_id.product_id.product_kind
+                != Product.ProductKindEnum.BUNDLE.name
+            ):
+                product_names.append(p.product_id.product_id.name)
+            else:
+                bundled_product_names = ', '.join(
+                    [bp.name for bp in p.product_id.product_id.bundled_products.all()]
+                )
+                product_names.append(
+                    f'{p.product_id.product_id.name} (BUNDLED - '
+                    f'{bundled_product_names})'
+                )
+
+        return ', '.join(product_names)
 
     @admin.display(description='Product Types')
     def ordered_product_types(self):
@@ -455,6 +504,14 @@ class Order(models.Model):
             [p.product_id.product_id.product_kind for p in self.orderproduct_set.all()]
         )
 
+    def ordered_products(self):
+        products = []
+
+        for order_product in self.orderproduct_set.all():
+            products += order_product.order_products_to_dict()
+
+        return products
+
 
 class OrderProduct(models.Model):
     order_id = models.ForeignKey(Order, on_delete=models.CASCADE)
@@ -466,6 +523,37 @@ class OrderProduct(models.Model):
     @property
     def product(self):
         return self.product_id.product_id
+
+    def order_products_to_dict(self) -> list[dict]:
+        from inventory.models import Product
+
+        products = []
+
+        if (
+            self.product_id.product_id.product_kind
+            == Product.ProductKindEnum.BUNDLE.name
+        ):
+            for bundled_item in self.product_id.product_id.bundled_items.all():
+                products.append(
+                    self._single_order_product_to_dict(
+                        bundled_item.product, bundled_item.quantity
+                    )
+                )
+        else:
+            products.append(
+                self._single_order_product_to_dict(self.product_id.product_id, 1)
+            )
+
+        return products
+
+    def _single_order_product_to_dict(self, product, base_quantity) -> dict:
+        product_dict = model_to_dict(product)
+        product_dict['supplier'] = model_to_dict(product.supplier)
+        product_dict['brand'] = model_to_dict(product.brand)
+        product_dict['total_cost'] = product.total_cost
+        product_dict['quantity'] = self.quantity * base_quantity
+
+        return product_dict
 
 
 class CampaignImpersonationToken(models.Model):
@@ -490,3 +578,217 @@ class CampaignImpersonationToken(models.Model):
             self.token = self._generate_token()
 
         return super().save(*args, **kwargs)
+
+
+class QuickOffer(models.Model):
+    class TypeEnum(Enum):
+        EVENT = 'Event'
+
+    class ShippingEnum(Enum):
+        TO_OFFICE = 'To Office'
+        TO_EMPLOYEES = 'To Employees'
+
+    class StatusEnum(Enum):
+        PENDING = 'Pending'
+        OFFER = 'Offer'
+        ACTIVE = 'Active'
+        FINISHED = 'Finished'
+
+    class AuthMethodEnum(Enum):
+        EMAIL = 'Email'
+        PHONE_NUMBER = 'Phone Number'
+        AUTH_ID = 'Auth ID'
+
+    class NicklasStatusEnum(Enum):
+        WAITING_TO_CLIENT = 'Waiting to client'
+        CLIENT_WAIT_TO_ORDER = 'Client wait to order'
+        NEGOTIATION_ON_PRICES = 'Negotiation on prices'
+        WAITING_TO_NEW_PRODUCTS = 'Waiting to new products'
+        OFFER_APPROVED = 'Offer approved'
+        LOST = 'Lost'
+
+    class ClientStatusEnum(Enum):
+        READY_TO_CHECK = 'Ready to check'
+        CLIENT_ADDED_TO_LIST = 'Client added to list'
+        LIST_CHANGED_AFTER_APPROVE = 'List changed after approve'
+
+    organization = models.ForeignKey(Organization, on_delete=models.CASCADE)
+    name = models.CharField(max_length=255)
+    code = models.CharField(max_length=255)
+    quick_offer_type = models.CharField(
+        max_length=30,
+        choices=[(q.name, q.value) for q in TypeEnum],
+        default=TypeEnum.EVENT.name,
+    )
+    ship_to = models.CharField(
+        max_length=30,
+        choices=[(q.name, q.value) for q in ShippingEnum],
+        default=ShippingEnum.TO_OFFICE.name,
+    )
+    status = models.CharField(
+        max_length=30,
+        choices=[(q.name, q.value) for q in StatusEnum],
+        default=StatusEnum.PENDING.name,
+    )
+    login_page_title = models.CharField(max_length=255)
+    login_page_subtitle = models.TextField()
+    main_page_first_banner_title = models.CharField(
+        max_length=255, null=True, blank=True
+    )
+    main_page_first_banner_subtitle = models.TextField(null=True, blank=True)
+    main_page_first_banner_image = RandomNameImageField(default='default-banner.png')
+    main_page_first_banner_mobile_image = RandomNameImageField(
+        default='default-banner.png'
+    )
+    main_page_second_banner_title = models.CharField(
+        max_length=255, null=True, blank=True
+    )
+    main_page_second_banner_subtitle = models.TextField(null=True, blank=True)
+    main_page_second_banner_background_color = ColorField(default='#C1E0CE')
+    main_page_second_banner_text_color = models.CharField(
+        max_length=30,
+        choices=[(b.name, b.value) for b in BannerTextColorEnum],
+    )
+    sms_sender_name = models.CharField(max_length=11)
+    sms_welcome_text = models.TextField()
+    email_welcome_text = models.TextField()
+    login_page_image = RandomNameImageField(
+        null=True, blank=True, default='default-banner.png'
+    )
+    login_page_mobile_image = RandomNameImageField(
+        null=True, blank=True, default='default-banner.png'
+    )
+    auth_method = models.CharField(
+        max_length=50,
+        choices=[(q.name, q.value) for q in AuthMethodEnum],
+        null=True,
+        blank=True,
+    )
+    auth_id = models.CharField(max_length=255, null=True, blank=True)
+    phone_number = models.CharField(
+        max_length=255, validators=[validate_phone_number], null=True, blank=True
+    )
+    email = models.CharField(
+        max_length=255, validators=[validate_email], null=True, blank=True
+    )
+    tags = models.ManyToManyField('QuickOfferTag', blank=True)
+    products = models.ManyToManyField('inventory.Product')
+    nicklas_status = models.CharField(
+        max_length=30,
+        choices=[(q.name, q.value) for q in NicklasStatusEnum],
+        default=NicklasStatusEnum.WAITING_TO_CLIENT.name,
+    )
+    client_status = models.CharField(
+        max_length=30,
+        choices=[(q.name, q.value) for q in ClientStatusEnum],
+        default=ClientStatusEnum.READY_TO_CHECK.name,
+    )
+    last_login = models.DateTimeField(null=True, blank=True)
+    otp_secret = models.CharField(max_length=255, null=True, blank=True)
+    selected_products = models.ManyToManyField(
+        'inventory.Product',
+        related_name='selected_products',
+        through='QuickOfferSelectedProduct',
+    )
+
+    @property
+    def manager_site_link(self):
+        # suffix indicates the authentication method manager need to use
+        suffix = 'e'
+        if self.auth_method == self.AuthMethodEnum.PHONE_NUMBER.name:
+            suffix = 'p'
+        elif self.auth_method == self.AuthMethodEnum.AUTH_ID.name:
+            suffix = 'a'
+
+        return f'{settings.EMPLOYEE_SITE_BASE_URL}/{self.code}/{suffix}'
+
+    def __str__(self):
+        return self.name
+
+    def generate_otp(self):
+        try:
+            self.otp_secret = pyotp.random_base32()
+            self.save()
+            return pyotp.TOTP(self.otp_secret, interval=settings.OTP_INTERVAL).now()
+        except Exception:
+            return None
+
+    def verify_otp(self, otp: str):
+        try:
+            return pyotp.TOTP(self.otp_secret, interval=settings.OTP_INTERVAL).verify(
+                otp
+            )
+        except Exception:
+            return False
+
+    @property
+    def is_active(self):
+        return self.status == self.StatusEnum.ACTIVE.name
+
+
+class QuickOfferTag(models.Model):
+    name = models.CharField(max_length=255)
+
+    def __str__(self):
+        return self.name
+
+
+class QuickOfferSelectedProduct(models.Model):
+    quick_offer = models.ForeignKey(QuickOffer, on_delete=models.CASCADE)
+    product = models.ForeignKey('inventory.Product', on_delete=models.CASCADE)
+    quantity = models.IntegerField()
+
+    @property
+    def get_id(self):
+        return self.product.id
+
+
+class QuickOfferOrder(models.Model):
+    class OrderStatusEnum(Enum):
+        INCOMPLETE = 'Incomplete'
+        PENDING = 'Pending'
+        CANCELLED = 'Cancelled'
+        SENT_TO_LOGISTIC_CENTER = 'Sent To Logistic Center'
+
+    reference = models.AutoField(primary_key=True)
+    order_date_time = models.DateTimeField(auto_now_add=True)
+    status = models.CharField(
+        max_length=50,
+        default=OrderStatusEnum.PENDING,
+        choices=[(status.name, status.value) for status in OrderStatusEnum],
+    )
+    full_name = models.CharField(max_length=255, null=True, blank=True)
+    phone_number = models.CharField(
+        max_length=255, null=True, blank=True, validators=[validate_phone_number]
+    )
+    additional_phone_number = models.CharField(
+        max_length=255, null=True, blank=True, validators=[validate_phone_number]
+    )
+    delivery_city = models.CharField(max_length=255, null=True, blank=True)
+    delivery_street = models.CharField(max_length=255, null=True, blank=True)
+    delivery_street_number = models.CharField(max_length=255, null=True, blank=True)
+    delivery_apartment_number = models.CharField(max_length=255, null=True, blank=True)
+    delivery_additional_details = models.CharField(
+        max_length=512, null=True, blank=True
+    )
+    logistics_center_status = models.CharField(max_length=16, null=True, blank=True)
+    country = models.CharField(max_length=100, null=True, blank=True)
+    state_code = models.CharField(max_length=100, null=True, blank=True)
+    zip_code = models.CharField(max_length=100, null=True, blank=True)
+    size = models.CharField(max_length=100, null=True, blank=True)
+    color = models.CharField(max_length=100, null=True, blank=True)
+    quick_offer = models.ForeignKey(QuickOffer, on_delete=models.CASCADE)
+
+    @property
+    def products(self):
+        return QuickOfferOrderProduct.objects.filter(quick_offer_order=self, quantity__gt=0).all()
+
+
+class QuickOfferOrderProduct(models.Model):
+    product_id = models.ForeignKey('inventory.Product', on_delete=models.CASCADE)
+    quick_offer_order = models.ForeignKey(QuickOfferOrder, on_delete=models.CASCADE)
+    quantity = models.PositiveIntegerField()
+
+    @property
+    def total_cost(self):
+        return self.product_id.cost_price * self.quantity
