@@ -2,14 +2,13 @@ import os
 from typing import Any
 import uuid
 
-from dal import autocomplete
 from django import forms
 from django.conf import settings
 from django.contrib import admin, messages
 from django.core.exceptions import ValidationError
 from django.core.files.base import ContentFile
 from django.db import models
-from django.http import HttpResponse
+from django.db.models import Q
 from django.urls import reverse
 from django.utils.datastructures import MultiValueDict
 from django.utils.html import format_html
@@ -17,7 +16,7 @@ from django.utils.http import urlencode
 from django.utils.safestring import mark_safe
 from django.utils.translation import gettext as _
 from modeltranslation.admin import TranslationAdmin
-from openpyxl import Workbook
+from nested_inline.admin import NestedModelAdmin, NestedStackedInline
 
 from campaign.models import Campaign, EmployeeGroupCampaignProduct
 from common.mixins import ActiveObjectsAdminMixin
@@ -26,16 +25,22 @@ from inventory.models import (
     BrandSupplier,
     Category,
     CategoryProduct,
+    ColorVariation,
     Product,
     ProductBundleItem,
+    ProductColorVariationImage,
     ProductImage,
+    ProductTextVariation,
+    ProductVariation,
     Supplier,
     Tag,
+    TextVariation,
+    Variation,
 )
 from lib.admin import ImportableExportableAdmin, RecordImportError
-from logistics.tasks import sync_product_with_logistics_center
 from services.email import send_stock_alert_email
 
+from .admin_actions import ProductActionsMixin
 from .admin_forms import ModelWithImagesXlsxImportForm
 
 
@@ -62,7 +67,7 @@ class ProductImageInlineFormset(forms.models.BaseInlineFormSet):
             raise forms.ValidationError('The main image should be selected')
 
 
-class ProductImagesInline(admin.TabularInline):
+class ProductImagesInline(NestedStackedInline):
     model = ProductImage
     formset = ProductImageInlineFormset
 
@@ -93,7 +98,10 @@ class BrandAdmin(ActiveObjectsAdminMixin, ImportableExportableAdmin):
         'created_at',
         'brand_products_link',
     )
-    search_fields = ('name',)
+    search_fields = (
+        'name_en',
+        'name_he',
+    )
 
     import_form = ModelWithImagesXlsxImportForm
 
@@ -247,12 +255,12 @@ class PriceFilter(admin.SimpleListFilter):
             return queryset.filter(cost_price__gte=60)
 
 
-class CategoryInline(admin.TabularInline):
+class CategoryInline(NestedStackedInline):
     model = Category.product_set.through
     extra = 1
 
 
-class TagInline(admin.TabularInline):
+class TagInline(NestedStackedInline):
     model = Tag.product_set.through
     extra = 1
 
@@ -261,18 +269,13 @@ class BundledProductInlineForm(forms.ModelForm):
     class Meta:
         model = ProductBundleItem
         fields = '__all__'
-        widgets = {
-            'product': autocomplete.ModelSelect2(url='bundled-product-autocomplete')
-        }
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
 
         # override label from instance to set the inital selected label before
         # the select widget was used
-        self.fields['product'].label_from_instance = (
-            lambda obj: f'{obj.sku} - {obj.name}'
-        )
+        self.fields['product'].label_from_instance = lambda obj: f'{obj.name}'
 
 
 class ProductAdminForm(forms.ModelForm):
@@ -296,7 +299,7 @@ class ProductAdminForm(forms.ModelForm):
         self.fields['brand'].required = True
         self.fields['cost_price'].required = True
 
-        if self.cleaned_data['product_kind'] != Product.ProductKindEnum.BUNDLE.name:
+        if self.cleaned_data.get('product_kind') != Product.ProductKindEnum.BUNDLE.name:
             # clean again with the required flags back
             super().full_clean()
 
@@ -306,7 +309,7 @@ class ProductAdminForm(forms.ModelForm):
         # for new bundle items set initial placeholder values for the required
         # fields, and they will be populated later when the bundled items form
         # is saved
-        if cleaned_data['product_kind'] == Product.ProductKindEnum.BUNDLE.name:
+        if cleaned_data.get('product_kind') == Product.ProductKindEnum.BUNDLE.name:
             if not cleaned_data['sku']:
                 cleaned_data['sku'] = 'PLACEHOLDER'
             if not cleaned_data['cost_price']:
@@ -319,20 +322,73 @@ class ProductAdminForm(forms.ModelForm):
         return cleaned_data
 
 
-class BundledProductsInline(admin.TabularInline):
+class BundledProductsInline(NestedStackedInline):
     model = ProductBundleItem
     extra = 1
     fk_name = 'bundle'
     form = BundledProductInlineForm
 
+    def formfield_for_foreignkey(self, db_field, request, **kwargs):
+        current_product_id = request.resolver_match.kwargs.get('object_id')
+        if db_field.name == 'product':
+            # Limit product choices to non-bundle products and not thw current product
+            kwargs['queryset'] = Product.objects.exclude(
+                Q(product_kind='BUNDLE') | Q(id=current_product_id)
+            ).order_by('name')
+        return super().formfield_for_foreignkey(db_field, request, **kwargs)
+
+
+class ProductColorVariationImageInline(NestedStackedInline):
+    model = ProductColorVariationImage
+    extra = 1
+    exclude = ['product', 'variation']
+
+
+class ProductTextVariationInline(NestedStackedInline):
+    model = ProductTextVariation
+    extra = 1
+    exclude = ['product', 'variation']
+
+
+class BaseProductVariationInlineFormset(forms.BaseInlineFormSet):
+    def clean(self):
+        super().clean()
+        if len(self.forms) > 6:
+            raise ValidationError('You cannot add more than 5 product variations.')
+
+
+class VariationInline(NestedStackedInline):
+    model = ProductVariation
+    extra = 1
+    inlines = [ProductTextVariationInline, ProductColorVariationImageInline]
+    formset = BaseProductVariationInlineFormset
+
 
 @admin.register(Product)
-class ProductAdmin(ImportableExportableAdmin):
-    search_fields = ['name', 'brand__name', 'supplier__name']
+class ProductAdmin(ProductActionsMixin, ImportableExportableAdmin, NestedModelAdmin):
+    search_fields = [
+        'name_en',
+        'name_he',
+        'brand__name_en',
+        'brand__name_he',
+        'supplier__name_en',
+        'supplier__name_he',
+        'product_type',
+        'sku',
+        'employeegroupcampaignproduct__employee_group_campaign_id__campaign__name_en',
+        'employeegroupcampaignproduct__employee_group_campaign_id__campaign__name_he',
+    ]
+    add_form_template = 'admin/product_change_form.html'
     change_list_template = 'admin/import_changelist.html'
     change_form_template = 'admin/product_change_form.html'
-    actions = ['duplicate', 'export_as_xlsx', 'sync_with_logistic_center']
-    inlines = [CategoryInline, TagInline, ProductImagesInline, BundledProductsInline]
+    actions = ['duplicate', 'export_as_xlsx']
+    inlines = [
+        CategoryInline,
+        TagInline,
+        ProductImagesInline,
+        BundledProductsInline,
+        VariationInline,
+    ]
     form = ProductAdminForm
     readonly_fields = ['total_cost']
 
@@ -346,6 +402,10 @@ class ProductAdmin(ImportableExportableAdmin):
         'remaining_quantity',
         'cost_price',
         'sku',
+        'product_kind',
+        'voucher_type',
+        'client_discount_rate',
+        'supplier_discount_rate',
         'main_image',
         'active_campaigns',
     )
@@ -368,6 +428,9 @@ class ProductAdmin(ImportableExportableAdmin):
         'sku',
         'reference',
         'product_kind',
+        'voucher_type',
+        'client_discount_rate',
+        'supplier_discount_rate',
         'product_type',
         'product_quantity',
         'supplier',
@@ -393,6 +456,17 @@ class ProductAdmin(ImportableExportableAdmin):
     )
 
     def save_formset(self, request, form, formset, change):
+        instances = formset.save(commit=False)
+        for instance in instances:
+            if isinstance(instance, ProductColorVariationImage):
+                instance.product = instance.product_variation.product
+                instance.variation = instance.product_variation.variation
+            if isinstance(instance, ProductTextVariation):
+                instance.product = instance.product_variation.product
+                instance.variation = instance.product_variation.variation
+            instance.save()
+        formset.save_m2m()
+
         super().save_formset(request, form, formset, change)
 
         # if the current formset we are saving is the bundled products formset
@@ -400,94 +474,6 @@ class ProductAdmin(ImportableExportableAdmin):
         # parent product's calculated fields
         if isinstance(formset.empty_form, BundledProductInlineForm):
             form.instance.update_bundle_calculated_fields()
-
-    def export_as_xlsx(self, request, queryset):
-        field_names = [
-            'id',
-            'brand',
-            'supplier',
-            'reference',
-            'name_en',
-            'name_he',
-            'product_kind',
-            'product_type',
-            'description_en',
-            'description_he',
-            'sku',
-            'link',
-            'active',
-            'cost_price',
-            'delivery_price',
-            'logistics_rate_cost_percent',
-            'total_cost',
-            'google_price',
-            'sale_price',
-            'technical_details_en',
-            'technical_details_he',
-            'warranty_en',
-            'warranty_he',
-            'exchange_value',
-            'exchange_policy_en',
-            'exchange_policy_he',
-            'categories',
-            'tags',
-            'active_campaigns',
-            'product_quantity',
-        ]
-
-        response = HttpResponse(
-            content_type='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
-        )
-        response['Content-Disposition'] = 'attachment; filename=inventory.products.xlsx'
-
-        workbook = Workbook()
-        worksheet = workbook.active
-        worksheet.append(field_names)
-
-        for _product in queryset:
-            category = _product.categories.all().first()
-            category = category.name if category else ''
-            tags = _product.tags.all().first()
-            tags = tags.name if tags else ''
-            worksheet.append(
-                [
-                    _product.id,
-                    _product.brand.name,
-                    _product.supplier.name,
-                    _product.reference,
-                    _product.name_en,
-                    _product.name_he,
-                    _product.product_kind,
-                    _product.product_type,
-                    _product.description_en,
-                    _product.description_he,
-                    _product.sku,
-                    _product.link,
-                    _product.active,
-                    _product.cost_price,
-                    _product.delivery_price,
-                    _product.logistics_rate_cost_percent,
-                    _product.total_cost,
-                    _product.google_price,
-                    _product.sale_price,
-                    _product.technical_details_en,
-                    _product.technical_details_he,
-                    _product.warranty_en,
-                    _product.warranty_he,
-                    _product.exchange_value,
-                    _product.exchange_policy_en,
-                    _product.exchange_policy_he,
-                    category,
-                    tags,
-                    self.active_campaigns(obj=_product),
-                    _product.product_quantity,
-                ]
-            )
-
-        workbook.save(response)
-        return response
-
-    export_as_xlsx.short_description = 'Export selected products as XLSX'
 
     def import_parse_and_save_xlsx_data(
         self, extra_params: dict[str, Any], request_files: MultiValueDict
@@ -534,22 +520,38 @@ class ProductAdmin(ImportableExportableAdmin):
             parsed_values = []
             for v in self._import_split_field_value(value):
                 if v:
-                    parsed_values.append(Category.objects.get(name__iexact=v))
+                    if len(v.split(', ')) > 1:
+                        v = v.split(', ')
+                    else:
+                        v = [
+                            v,
+                        ]
+                    for val in v:
+                        parsed_values.extend(
+                            list(Category.objects.filter(name__iexact=val))
+                        )
 
-            if len(parsed_values) == 0:
-                raise ValidationError(
-                    {'categories': ['Must provide at least one category']}
-                )
+            # if len(parsed_values) == 0:
+            #     raise ValidationError(
+            #         {'categories': ['Must provide at least one category']}
+            #     )
 
             return parsed_values
         elif name == 'tags':
             parsed_values = []
             for v in self._import_split_field_value(value):
                 if v:
-                    parsed_values.append(Tag.objects.get(name__iexact=v))
+                    if len(v.split(', ')) > 1:
+                        v = v.split(', ')
+                    else:
+                        v = [
+                            v,
+                        ]
+                    for val in v:
+                        parsed_values.extend(list(Tag.objects.filter(name__iexact=val)))
 
-            if len(parsed_values) == 0:
-                raise ValidationError({'tags': ['Must provide at least one tag']})
+            # if len(parsed_values) == 0:
+            #     raise ValidationError({'tags': ['Must provide at least one tag']})
 
             return parsed_values
         elif name == 'images':
@@ -649,15 +651,23 @@ class ProductAdmin(ImportableExportableAdmin):
                 image.product = obj
                 image.save()
 
-    def sync_with_logistic_center(self, request, queryset):
-        for obj in queryset:
-            sync_product_with_logistics_center.apply_async((obj.pk,))
+    # our current only provider (pick and pack) does not support syncing
+    # products, and instead they are synced with inbound or outbound messages.
+    # so this is disabled for now
+    # def sync_with_logistic_center(self, request, queryset):
+    #     for obj in queryset:
+    #         # we only have one active logistics provider (=center) at the
+    #         # moment, but in the future some stock and orders may be managed by
+    #         # one while others by another according to some logic
+    #         sync_product_with_logistics_center.apply_async(
+    #             (obj.pk, settings.ACTIVE_LOGISTICS_CENTER)
+    #         )
 
-        self.message_user(
-            request,
-            f'Will sync {len(queryset)} products with logistics center...',
-            level=messages.SUCCESS,
-        )
+    #     self.message_user(
+    #         request,
+    #         f'Will sync {len(queryset)} products with logistics center...',
+    #         level=messages.SUCCESS,
+    #     )
 
     def main_image(self, obj):
         if obj.main_image:
@@ -669,6 +679,19 @@ class ProductAdmin(ImportableExportableAdmin):
         return None
 
     def save_model(self, request, obj, form, change):
+        if obj.product_kind == 'MONEY':
+            obj.client_discount_rate = (
+                round(obj.client_discount_rate, 2) if obj.client_discount_rate else 0.0
+            )
+            obj.supplier_discount_rate = (
+                round(obj.supplier_discount_rate, 2)
+                if obj.supplier_discount_rate
+                else 0.0
+            )
+        else:
+            obj.client_discount_rate = 0
+            obj.supplier_discount_rate = 0
+            obj.voucher_type = None
         obj.clean()
         super().save_model(request, obj, form, change)
 
@@ -708,6 +731,39 @@ class ProductAdmin(ImportableExportableAdmin):
                 alert_products.update(alert_stock_sent=True)
         return super().changelist_view(request, extra_context)
 
+    class Media:
+        js = ('js/variation_inline_limit.js',)
+
+    @staticmethod
+    def get_variations_list():
+        text_variations = (
+            Variation.objects.filter(
+                variation_kind=Variation.VariationKindEnum.TEXT.name
+            )
+            .all()
+            .values_list('system_name', flat=True)
+        )
+        color_variations = (
+            Variation.objects.filter(
+                variation_kind=Variation.VariationKindEnum.COLOR.name
+            )
+            .all()
+            .values_list('system_name', flat=True)
+        )
+        variation_mapping = {
+            'TEXT': list(text_variations),
+            'COLOR': list(color_variations),
+        }
+        return variation_mapping
+
+    def render_change_form(
+        self, request, context, add=False, change=False, form_url='', obj=None
+    ):
+        if not context:
+            context = {}
+        context.update({'variation_mapping': self.get_variations_list()})
+        return super().render_change_form(request, context, add, change, form_url, obj)
+
 
 class CategoryProductInline(admin.TabularInline):
     model = CategoryProduct
@@ -733,3 +789,54 @@ class CategoryAdmin(TranslationAdmin):
 @admin.register(Tag)
 class TagAdmin(TranslationAdmin):
     list_display = ('name',)
+
+
+class ColorForm(forms.ModelForm):
+    class Meta:
+        model = ColorVariation
+        fields = '__all__'
+        widgets = {
+            'color_code': forms.TextInput(attrs={'type': 'color'}),
+        }
+
+
+@admin.register(ColorVariation)
+class ColorVariationAdmin(admin.ModelAdmin):
+    form = ColorForm
+
+
+@admin.register(TextVariation)
+class TextVariationAdmin(TranslationAdmin):
+    list_display = ('text',)
+
+
+class TextVariationInline(admin.TabularInline):
+    exclude = ('text', 'text_variation')
+    model = Variation.text_variation.through  # Use the ManyToMany intermediary model
+    extra = 1
+
+
+class ColorVariationInline(admin.TabularInline):
+    form = ColorForm
+    model = Variation.color_variation.through  # Use the ManyToMany intermediary model
+    extra = 1
+
+
+@admin.register(Variation)
+class VariationAdmin(TranslationAdmin):
+    change_form_template = 'inventory/variation_change_form.html'
+    list_display = ('system_name', 'variation_kind', 'site_name')
+    exclude = ('color_variation', 'text_variation')
+    inlines = [ColorVariationInline, TextVariationInline]
+
+    def save_formset(self, request, form, formset, change):
+        formset.save(commit=False)
+        variation_kind = form.cleaned_data.get('variation_kind')
+        if variation_kind == 'TEXT':
+            form.instance.color_variation.clear()
+
+        elif variation_kind == 'COLOR':
+            form.instance.text_variation.clear()
+
+        formset.save_m2m()
+        formset.save()

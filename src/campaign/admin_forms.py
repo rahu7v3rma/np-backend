@@ -1,7 +1,9 @@
 from dal import autocomplete
 from django import forms
 from django.contrib.admin import site as admin_site
-from django.contrib.admin.widgets import RelatedFieldWidgetWrapper
+from django.contrib.admin.widgets import (
+    RelatedFieldWidgetWrapper,
+)
 from django.forms.models import BaseInlineFormSet
 
 from campaign.models import (
@@ -11,6 +13,7 @@ from campaign.models import (
     EmployeeGroupCampaign,
     EmployeeGroupCampaignProduct,
     Order,
+    OrderProduct,
     Organization,
     QuickOffer,
 )
@@ -19,6 +22,13 @@ from inventory.models import Product
 
 class CampaignForm(forms.ModelForm):
     organization = forms.ModelChoiceField(queryset=Organization.objects.all())
+    campaign_type = forms.ChoiceField(
+        choices=[
+            (Campaign.CampaignTypeEnum.NORMAL.name, 'Normal'),
+            (Campaign.CampaignTypeEnum.WALLET.name, 'Wallet'),
+        ],
+        initial=Campaign.CampaignTypeEnum.NORMAL.value,
+    )
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
@@ -30,14 +40,39 @@ class CampaignForm(forms.ModelForm):
             admin_site,
         )
 
+        self.fields['tags'].required = False
+        # Add wrapper for tags field
+        self.fields['tags'].widget = RelatedFieldWidgetWrapper(
+            self.fields['tags'].widget,
+            Campaign._meta.get_field('tags').remote_field,
+            admin_site,
+            can_add_related=True,
+            can_change_related=True,
+        )
+
+        # If editing existing campaign, initialize tags
+        if self.instance.pk:
+            self.initial['tags'] = self.instance.tags.all()
+
+    def save(self, commit=True):
+        campaign = super().save(commit=False)
+
+        if commit:
+            campaign.save()
+            self.save_m2m()  # Save tags relationship
+
+        return campaign
+
     class Meta:
         model = Campaign
         fields = (
             'organization',
             'name',
             'name_he',
+            'campaign_type',
             'start_date_time',
             'end_date_time',
+            'tags',  # Added tags to fields
         )
         widgets = {
             'start_date_time': forms.widgets.DateTimeInput(
@@ -51,6 +86,14 @@ class CampaignForm(forms.ModelForm):
 
 class EmployeeGroupCampaignForm(forms.Form):
     employee_group = forms.ModelChoiceField(queryset=EmployeeGroup.objects.all())
+    default_discount = forms.ChoiceField(
+        choices=[
+            (choice.name, choice.value)
+            for choice in EmployeeGroupCampaign.DefaultDiscountTypeEnum
+        ],
+        initial=EmployeeGroupCampaign.DefaultDiscountTypeEnum.ORGANIZATION.name,
+        required=False,
+    )
     budget_per_employee = forms.IntegerField()
     product_selection_mode = forms.ChoiceField(
         choices=[
@@ -125,13 +168,20 @@ class ImportPricelistForm(forms.Form):
 class AddCampaignProductsForm(forms.Form):
     template_name = 'campaign/product_selection.html'
 
-    # do not filter by active products here since this queryset is the
-    # validation and not the available options (that filter is at the view
-    # which supplies product data to the selection page). if this is validated
-    # as active only products and we select an active product for a campaign
-    # and then deactivate it, the products form will never be validated and we
-    # won't be able to save it
-    products = forms.ModelMultipleChoiceField(queryset=Product.objects.all())
+    # campaign_data is a stringified json representation of the selected
+    # products, their discount mode and rates. the structure is:
+    # {
+    #    "selected_products": [1, 2, 3, ...],
+    #    "discount_modes": {
+    #      "1": "ORGANIZATION",
+    #      ...
+    #    },
+    #    "discount_rates": {
+    #      "1": 10,
+    #      ...
+    #    }
+    # }
+    campaign_data = forms.CharField()
 
 
 class CampaignCustomizationForm(forms.ModelForm):
@@ -185,6 +235,25 @@ class CampaignCustomizationForm(forms.ModelForm):
                 '`organization_name`, `campaign_name`'
             ),
         }
+
+
+class OrderProductInlineForm(forms.ModelForm):
+    class Meta:
+        model = OrderProduct
+        fields = '__all__'
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+
+        if getattr(self.instance, 'pk', None):
+            order_product: OrderProduct = self.instance
+            if not order_product.product_id.active:
+                self.fields['product_id'].disabled = True
+                self.fields['quantity'].disabled = True
+        else:
+            self.fields['product_id'].queryset = self.fields[
+                'product_id'
+            ].queryset.filter(active=True)
 
 
 class OrderProductInlineFormset(BaseInlineFormSet):
@@ -251,6 +320,7 @@ class QuickOfferForm(forms.ModelForm):
             'email',
             'auth_id',
             'tags',
+            'nicklas_status',
         )
 
     def __init__(self, *args, **kwargs):
@@ -273,6 +343,10 @@ class AddQuickOfferProductsForm(forms.Form):
 
 
 class QuickOfferCustomizationForm(forms.ModelForm):
+    sms_sender_name = forms.CharField(required=False)
+    sms_welcome_text = forms.CharField(required=False)
+    email_welcome_text = forms.CharField(required=False)
+
     class Meta:
         model = QuickOffer
         fields = (

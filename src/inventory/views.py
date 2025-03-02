@@ -1,3 +1,4 @@
+from django.conf import settings
 from django.core.paginator import Paginator
 from django.db.models import (
     Case,
@@ -5,6 +6,7 @@ from django.db.models import (
     OuterRef,
     Q,
     Subquery,
+    Value,
     When,
 )
 from django.db.models.functions import Coalesce
@@ -13,7 +15,11 @@ from rest_framework.authentication import SessionAuthentication
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
-from campaign.models import OrganizationProduct
+from campaign.models import (
+    EmployeeGroupCampaign,
+    OrganizationProduct,
+    QuickOffer,
+)
 
 from .models import Product, Supplier
 from .serializers import (
@@ -62,8 +68,24 @@ class ProductView(APIView):
         request_supplier_id = request_serializer.validated_data.get('supplier_id', None)
         request_category_id = request_serializer.validated_data.get('category_id', None)
         request_tag_id = request_serializer.validated_data.get('tag_id', None)
+        request_employee_group_id = request_serializer.validated_data.get(
+            'employee_group_id', None
+        )
+        request_quick_offer_id = request_serializer.validated_data.get(
+            'quick_offer_id', None
+        )
+        request_campaign_id = request_serializer.validated_data.get('campaign_id', None)
+        request_product_kind = request_serializer.validated_data.get(
+            'product_kind', None
+        )
         request_query = request_serializer.validated_data.get('query', None)
         request_product_ids = request_serializer.validated_data.get('product_ids', None)
+        request_google_price_min = request_serializer.validated_data.get(
+            'google_price_min', None
+        )
+        request_google_price_max = request_serializer.validated_data.get(
+            'google_price_max', None
+        )
 
         products = Product.objects.filter(active=True)
 
@@ -93,6 +115,10 @@ class ProductView(APIView):
             products = products.filter(calculated_price__gte=request_org_price_min)
         if request_org_price_max:
             products = products.filter(calculated_price__lte=request_org_price_max)
+        if request_google_price_min:
+            products = products.filter(google_price__gte=request_google_price_min)
+        if request_google_price_max:
+            products = products.filter(google_price__lte=request_google_price_max)
         if request_brand_id:
             products = products.filter(brand_id=request_brand_id)
         if request_supplier_id:
@@ -101,6 +127,16 @@ class ProductView(APIView):
             products = products.filter(categories__id=request_category_id)
         if request_tag_id:
             products = products.filter(tags__id=request_tag_id)
+        if request_product_kind:
+            products = products.filter(product_kind=request_product_kind)
+        if request_employee_group_id:
+            employee_group_campaign = EmployeeGroupCampaign.objects.filter(
+                campaign=request_campaign_id, employee_group=request_employee_group_id
+            ).first()
+
+            products = Product.objects.filter(
+                employeegroupcampaignproduct__employee_group_campaign_id=employee_group_campaign.id
+            )
         if request_query:
             products = products.filter(
                 Q(name_en__icontains=request_query)
@@ -108,6 +144,15 @@ class ProductView(APIView):
             )
         if request_product_ids:
             products = products.filter(id__in=request_product_ids)
+        if request_quick_offer_id:
+            quick_offer = QuickOffer.objects.filter(id=request_quick_offer_id).first()
+            if quick_offer:
+                quick_offer_selected_products = list(
+                    quick_offer.selected_products.values_list('id', flat=True)
+                )
+                if not quick_offer_selected_products:
+                    quick_offer_selected_products.append(None)
+                products = products.filter(id__in=quick_offer_selected_products)
 
         paginator = Paginator(products.order_by('id').all(), request_limit)
         page = paginator.get_page(request_page)
@@ -177,7 +222,12 @@ class SupplierProductsView(APIView):
                 },
                 status=status.HTTP_404_NOT_FOUND,
             )
-        serializer = ProductSerializer(supplier.supplier_products.all(), many=True)
+        serializer = ProductSerializer(
+            supplier.supplier_products.annotate(
+                tax_percent=Value(settings.TAX_PERCENT)
+            ).all(),
+            many=True,
+        )
 
         return Response(
             {

@@ -5,7 +5,7 @@ from django.db import migrations, models
 
 class Migration(migrations.Migration):
     dependencies = [
-        ('campaign', '0047_quickoffertag_quickoffer'),
+        ('campaign', '0049_quickoffertag_quickoffer'),
     ]
 
     operations = [

@@ -48,10 +48,8 @@
       "phone_number": "+972501234567",
       "email": "valid@email.com",
       "nicklas_status": "WAITING_TO_CLIENT",
-      "client_status": "READY_TO_CHECK",
       "last_login": null,
-      "tags": [1],
-      "products": [1, 2, 3]
+      "tags": [1]
     }
   },
   {
@@ -102,10 +100,48 @@
       "phone_number": "+972501234567",
       "email": "valid@email.com",
       "nicklas_status": "WAITING_TO_CLIENT",
-      "client_status": "READY_TO_CHECK",
       "last_login": null,
-      "tags": [1],
-      "products": [1, 2]
+      "tags": [1]
+    }
+  },
+  {
+    "model": "campaign.quickofferproduct",
+    "pk": 1,
+    "fields": {
+      "quick_offer": 1,
+      "product": 1
+    }
+  },
+  {
+    "model": "campaign.quickofferproduct",
+    "pk": 2,
+    "fields": {
+      "quick_offer": 1,
+      "product": 2
+    }
+  },
+  {
+    "model": "campaign.quickofferproduct",
+    "pk": 3,
+    "fields": {
+      "quick_offer": 1,
+      "product": 3
+    }
+  },
+    {
+    "model": "campaign.quickofferproduct",
+    "pk": 4,
+    "fields": {
+      "quick_offer": 2,
+      "product": 1
+    }
+  },
+  {
+    "model": "campaign.quickofferproduct",
+    "pk": 5,
+    "fields": {
+      "quick_offer": 2,
+      "product": 2
     }
   },
   {
@@ -194,33 +230,5 @@
       "exchange_policy": "",
       "product_quantity": 300
     }
-  },
-  {
-    "model": "campaign.quickofferorder",
-    "pk": 1,
-    "fields": {
-      "order_date_time": "2024-10-24T15:23:07.436Z",
-      "status": "PENDING",
-      "full_name": "quick_offer_order_1",
-      "phone_number": "9876543210",
-      "additional_phone_number": "9876543210",
-      "delivery_city": "quick_offer_order_1",
-      "delivery_street": "quick_offer_order_1",
-      "delivery_street_number": "quick_offer_order_1",
-      "delivery_apartment_number": "quick_offer_order_1",
-      "delivery_additional_details": "quick_offer_order_1",
-      "logistics_center_status": "quick_offer_orde",
-      "country": "quick_offer_order_1",
-      "state_code": "quick_offer_order_1",
-      "zip_code": "quick_offer_order_1",
-      "size": "quick_offer_order_1",
-      "color": "quick_offer_order_1",
-      "quick_offer": 1
-    }
-  },
-  {
-    "model": "campaign.quickofferorderproduct",
-    "pk": 1,
-    "fields": { "product_id": 1, "quick_offer_order": 1, "quantity": 3 }
   }
 ]

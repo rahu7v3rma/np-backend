@@ -3,40 +3,126 @@
 
 {% block extrahead %}{{ block.super }}
 <script src="{% url 'admin:jsi18n' %}"></script>
-    <script src="{% static "js/status_form_js.js" %}"></script>
-    <script src="{% static 'js/campaign_requests.js' %}"></script>
     <script>
     function handleExportChange() {
         const selectExportDropDown = document.getElementById('selectExportDropDown');
         const goButton = document.getElementById('action_go_button');
 
-        if (selectExportDropDown.value === '1') {
-            goButton.onclick = () => {
-                exportCampaignProducts('{{ campaign_code }}', '{{ object_id }}');
-                selectExportDropDown.selectedIndex = 0;
-                handleExportChange();
+        goButton.onclick = () => {
+            let currentUrl = window.location.href;
+            let exportType = '';
+
+            if (selectExportDropDown.value === '1') {
+                exportType = 'product';
+            } else if (selectExportDropDown.value === '2') {
+                exportType = 'employee_orders';
+            } else if (selectExportDropDown.value === '3') {
+                exportType = 'employee_budgets';
+            } else if (selectExportDropDown.value === '4') {
+                exportType = 'campaign';
             }
-        } else if (selectExportDropDown.value === '2') {
-            goButton.onclick = () => {
-                exportEmployeeSelection('{{ campaign_code }}', '{{ object_id }}');
-                selectExportDropDown.selectedIndex = 0;
-                handleExportChange();
+
+            if (exportType) {
+                if (currentUrl.includes('?')) {
+                    window.open(currentUrl + '&export_type=' + exportType);
+                } else {
+                    window.open(currentUrl + '?export_type=' + exportType);
+                }
             }
-        } else {
-            goButton.onclick = () => null;
         }
     }
     </script>
+
+<script>
+    async function updateTotalBudget(input) {
+        const campaignEmployeeId = input.dataset.campaignEmployeeId;
+        const newBudget = Math.round(input.value);
+
+        try {
+            const response = await fetch(`/campaign/update-employee-budget/${campaignEmployeeId}/`, {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                    'X-CSRFToken': document.querySelector('[name=csrfmiddlewaretoken]').value
+                },
+                body: JSON.stringify({
+                    total_budget: newBudget,
+                    campaign_code: "{{campaign_code}}"
+                })
+            });
+
+            if (!response.ok) {
+                throw new Error('Failed to update budget');
+            }
+
+            // Update the left budget display if needed
+            const data = await response.json();
+            const row = input.closest('tr');
+            const leftBudgetCell = row.querySelector('.employee_left_budget');
+            if (leftBudgetCell) {
+                leftBudgetCell.textContent = data.left_budget;
+            }
+
+        } catch (error) {
+            console.error('Error updating budget:', error);
+            alert('Failed to update budget. Please try again.');
+            // Revert to original value
+            input.value = input.defaultValue;
+        }
+    }
+</script>
 {{ media }}
 {% endblock %}
 
 {% block extrastyle %}
 {{ block.super }}<link rel="stylesheet" href="{% static "admin/css/forms.css" %}">
+<link rel="stylesheet" href="{% static "css/status_form_css.css" %}">
 <!-- TODO: Make a seperate style/css file and move this class there. -->
 <style>
 .disabled {
   pointer-events: none;
   opacity: 0.6;
+}
+
+.export-buttons {
+    margin: 10px 0;
+}
+
+.dropdown {
+    position: relative;
+    display: inline-block;
+}
+
+.dropdown-button {
+    background-color: #79aec8;
+    padding: 10px 15px;
+    border: none;
+    cursor: pointer;
+    color: white;
+}
+
+.dropdown-content {
+    display: none;
+    position: absolute;
+    background-color: #f9f9f9;
+    min-width: 200px;
+    box-shadow: 0px 8px 16px 0px rgba(0,0,0,0.2);
+    z-index: 1;
+}
+
+.dropdown-content a {
+    color: black;
+    padding: 12px 16px;
+    text-decoration: none;
+    display: block;
+}
+
+.dropdown-content a:hover {
+    background-color: #f1f1f1;
+}
+
+.dropdown:hover .dropdown-content {
+    display: block;
 }
 </style>
 {% endblock %}
@@ -81,8 +167,9 @@
         >
         <option value="0">Select Export</option>
         <option value="1">Export campaign products as XLSX</option>
-        <option value="2">Export employee selections as XLSX</option>
-
+        <option value="2" {% if not status %}disabled{% endif %}>Export employee orders as XLSX</option>
+        <option value="3" {% if not status %}disabled{% endif %}>Export employee budgets as XLSX</option>
+        <option value="4">Export campaign selection as XLSX</option>
     </select>
     <button id="action_go_button" class="button" style="padding: 6px">Go</button>
 </div>
@@ -103,8 +190,83 @@
     </select>
 
     <input type="submit" value="Edit" onclick="window.open('{% url 'admin:campaign_campaign_edit' %}?campaign={{ object_id }}','_blank')">
-    <div>
-        <input type="submit" class="btn btn-primary disabled" value="Resend Invitation" id="resend_invitation_button" style="margin-left: 10px;">
+    <div style="position: relative; margin-left: 10px;">
+        <div onclick="var dropdown = document.getElementById('sendInvitationDropdown');dropdown.style.display = dropdown.style.display === 'flex' ? 'none' : 'flex';" style="border:1px solid var(--border-color);border-radius: 4px;padding: 10px;display: flex; align-items: center; position: relative; cursor: pointer;">
+            <span style="margin-right: 10px; font-size: 0.8125rem;">Send Invitations</span>
+            <svg style="position: absolute; right:0px;" xmlns="http://www.w3.org/2000/svg" height="15px" viewBox="0 -960 960 960" width="15px" fill="#333333"><path d="M480-344 240-584l56-56 184 184 184-184 56 56-240 240Z"/></svg>
+        </div>
+        <div style="display: flex;flex-direction: column;align-items:flex-end;position: absolute;right:0px;z-index: 10;">
+            <div id="sendInvitationDropdown" style="width:120px !important;margin-top:5px;display: none;justify-items:center; flex-direction: column;width:100%; z-index: 10; background-color: white; border:1px solid var(--border-color);border-radius: 4px;">
+                <div style="padding: 5px;">
+                    <input type="checkbox" value="sendInvitationEmail" name="sendInvitationEmail" id="sendInvitationEmailInput" onchange="{
+                        const sendInvitationEmailInput = document.getElementById('sendInvitationEmailInput');
+                        const sendInvitationSmsInput = document.getElementById('sendInvitationSmsInput');
+                        const sendInvitationSmsPreview = document.getElementById('sendInvitationSmsPreview');
+                        const sendInvitationEmailPreview = document.getElementById('sendInvitationEmailPreview');
+                        const sendInvitationPreview = document.getElementById('sendInvitationPreview');
+                        sendInvitationPreview.style.display = sendInvitationEmailInput.checked || sendInvitationSmsInput.checked ? 'block' : 'none';
+                        sendInvitationEmailPreview.style.display = sendInvitationEmailInput.checked ? 'block' : 'none';
+                        sendInvitationSmsPreview.style.display = sendInvitationSmsInput.checked ? 'block' : 'none';
+                    }"/>
+                    <label for="sendInvitationEmailInput" >Email</label>
+                </div>
+                <div style="padding: 5px;">
+                    <input type="checkbox" value="sendInvitationSms" name="sendInvitationSms" id="sendInvitationSmsInput" onchange="{
+                        const sendInvitationEmailInput = document.getElementById('sendInvitationEmailInput');
+                        const sendInvitationSmsInput = document.getElementById('sendInvitationSmsInput');
+                        const sendInvitationSmsPreview = document.getElementById('sendInvitationSmsPreview');
+                        const sendInvitationEmailPreview = document.getElementById('sendInvitationEmailPreview');
+                        const sendInvitationPreview = document.getElementById('sendInvitationPreview');
+                        sendInvitationPreview.style.display = sendInvitationEmailInput.checked || sendInvitationSmsInput.checked ? 'block' : 'none';
+                        sendInvitationEmailPreview.style.display = sendInvitationEmailInput.checked ? 'block' : 'none';
+                        sendInvitationSmsPreview.style.display = sendInvitationSmsInput.checked ? 'block' : 'none';
+                    }"/>
+                    <label for="sendInvitationSmsInput">SMS</label>
+                </div>
+            </div>
+            <div style="margin-top:10px;width:max-content;max-width: 350px;display:none;border:1px solid var(--border-color);border-radius: 4px;z-index: 10;background-color: white; padding: 10px;" id="sendInvitationPreview">
+                <h3>Invitations Preview</h3>
+                <div>
+                    <div id="sendInvitationSmsPreview">
+                        <h4>SMS Preview</h4>
+                        <p>{{ sms_welcome_text }}</p>
+                    </div>
+                    <div id="sendInvitationEmailPreview">
+                        <h4>Email Preview</h4>
+                        <p>{{ email_welcome_text }}</p>
+                    </div>
+                </div>
+                <button class="button" style="padding: 6px; cursor: pointer;margin-top:10px;" onclick="{
+                    const sendInvitationType = [];
+                    const selectedCampaignEmployees = Array.from(
+                        document.querySelectorAll(
+                            '.form-row>td>[type=\'checkbox\']'
+                        )).filter(
+                            element => element.checked
+                        ).map(element=>element.value);
+
+                    if(selectedCampaignEmployees.length === 0){
+                        alert('Please choose an employee before sending an invitation.');
+                        return
+                    }
+                    if(document.getElementById('sendInvitationEmailInput').checked){
+                        sendInvitationType.push('email');
+                    }
+                    if(document.getElementById('sendInvitationSmsInput').checked){
+                        sendInvitationType.push('sms');
+                    }
+                    if(sendInvitationType.length){
+                        const currentHref = window.location.href;
+                        const [baseUrl, queryString] = currentHref.split('?');
+                        const searchParams = new URLSearchParams(queryString || '');
+                        searchParams.set('sendInvitationType', sendInvitationType.join(','));
+                        searchParams.set('campaignEmployees', selectedCampaignEmployees.join(','));
+                        const newUrl = `${baseUrl}?${searchParams.toString()}`;
+                        window.open(newUrl, '_self');
+                    }
+                }">Send Invitations</button>
+            </div>
+        </div>
     </div>
     
 </div>
@@ -123,43 +285,89 @@
                         <th class="original" style="display: none;"></th>
                         <th class="column-">EMPLOYEE NAME</th>
                         <th class="column-">EMPLOYEE GROUP</th>
+                        <th class="column-">TOTAL BUDGET</th>
+                        <th class="column-">GROUP BUDGET</th>
                         <th class="column-">EMPLOYEE ORDERS</th>
+                        <th class="column-">USED BUDGET</th>
+                        <th class="column-">LEFT BUDGET</th>
+                        <th class="column-">Time for Selecting a Gift</th>
+                        <th class="column-">EMPLOYEE LAST LOGIN</th>
                         <th class="column-"></th>
                         <th class="column-"></th>
                     </tr>
                 </thead>
                 <tbody>
-                    {% for row in status %}
-                    <tr class="form-row">
-                        {% if campaign_active %}
-                          <td class="field">
-                            {% if not row.order_id %}
-                              <input type="checkbox" class="row-checkbox" id="row-checkbox_{{ row.campaign_employee_id }}" name="" value="{{ row.campaign_employee_id }}">
+                    {% if status %}
+                        {% for row in status %}
+                        <tr class="form-row">
+                            {% if campaign_active %}
+                              <td class="field">
+                                {% if not row.order_id %}
+                                  <input type="checkbox" class="row-checkbox" id="row-checkbox_{{ row.campaign_employee_id }}" name="" value="{{ row.campaign_employee_id }}">
+                                {% endif %}
+                              </td>
                             {% endif %}
-                          </td>
-                        {% endif %}
-                        <td class="original" style="display: none;"></td>
-                        <td class="field" style="vertical-align: middle;">
-                            {{ row.employee_first_name }} {{ row.employee_last_name }}
-                        </td>
-                        <td class="field" style="vertical-align: middle;">
-                            {{ row.employee_group_name }}
-                        </td>
-                        <td class="field" style="vertical-align: middle;">
-                            {% if row.ordered_products %}{{ row.ordered_products }}{% endif %}
-                        </td>
-                        <td>
-                            {% if row.order_id %}
-                                <input type="submit" value="Change" onclick="window.open('{% url 'admin:campaign_order_change' row.order_id %}?_popup=1','_blank', 'width=800, height=600')">
-                            {% endif %}
-                        </td>
-                        <td>
-                            {% if campaign_active and row.campaign_employee_id %}
-                                <input type="submit" value="Impersonate" onclick="window.open('{% url 'admin:campaign_impersonate_view' object_id row.campaign_employee_id %}','_blank')">
-                            {% endif %}
-                        </td>
-                    </tr>
-                    {% endfor %}
+                            <td class="original" style="display: none;"></td>
+                            <td class="field" style="vertical-align: middle;">
+                                {{ row.employee_first_name }} {{ row.employee_last_name }}
+                            </td>
+                            <td class="field" style="vertical-align: middle;">
+                                {{ row.employee_group_name }}
+                            </td>
+                            <td class="field" style="vertical-align: middle;">
+                                <input
+                                    type="number"
+                                    class="budget-input"
+                                    value="{{ row.employee_total_budget }}"
+                                    data-campaign-employee-id="{{ row.emp_id }}"
+                                    onchange="if(this.value.length && +this.value>=0){updateTotalBudget(this)}"
+                                    style="width: 100px; padding: 5px;"
+                                    oninput="if(this.value.length && +this.value>=0){this.defaultValue=this.value}else{this.value=this.defaultValue}"
+                                >
+                            </td>
+                            <td class="field" style="vertical-align: middle;">
+                                {% if row.group_budget < 0 %}
+                                    0
+                                {% else %}
+                                    {{ row.group_budget }}
+                                {% endif %}
+                            </td>
+                            <td class="field" style="vertical-align: middle;">
+                                {% if row.ordered_products %}{{ row.ordered_products }}{% endif %}
+                            </td>
+                            <td class="field" style="vertical-align: middle;">
+                                {{ row.employee_used_budget }}
+                            </td>
+                            <td class="field employee_left_budget" style="vertical-align: middle;">
+                                {% if row.left_budget < 0 %}
+                                    0
+                                {% else %}
+                                    {{ row.left_budget }}
+                                {% endif %}
+                            </td>
+                            <td class="field" style="vertical-align: middle;">
+                                {% if row.order_date_time %}{{ row.order_date_time }}{% endif %}
+                            </td>
+                            <td class="field" style="vertical-align: middle;">
+                                {% if row.campaign_employee_last_login %}{{ row.campaign_employee_last_login }}{% endif %}
+                            </td>
+                            <td>
+                                {% if row.order_id %}
+                                    <input type="submit" value="Change" onclick="window.open('{% url 'admin:campaign_order_change' row.order_id %}?_popup=1','_blank', 'width=800, height=600')">
+                                {% endif %}
+                            </td>
+                            <td>
+                                {% if campaign_active and row.campaign_employee_id %}
+                                    <input type="submit" value="Impersonate" onclick="window.open('{% url 'admin:campaign_impersonate_view' object_id row.campaign_employee_id %}','_blank')">
+                                {% endif %}
+                            </td>
+                        </tr>
+                        {% endfor %}
+                    {% else %}
+                        <tr>
+                            <td colspan="12" style="text-align: center; font-weight: bold;">No data exists</td>
+                        </tr>
+                    {% endif %}
                 </tbody>
             </table>
         </fieldset>
@@ -177,17 +385,10 @@
     <script>
         document.addEventListener('DOMContentLoaded', function() {
             const form = document.getElementById('campaign_invitation_form');
-            const resendButton = document.getElementById('resend_invitation_button');
             const selectAllCheckbox = document.getElementById('select_all');
             const rowCheckboxes = document.querySelectorAll('.row-checkbox');
             const selectedEmployees = [];
-    
-            // Function to enable or disable the resend button based on checkbox selection
-            function updateResendButtonState() {
-                const anyChecked = Array.from(rowCheckboxes).some(checkbox => checkbox.checked);
-                resendButton.classList.toggle('disabled', !anyChecked);
-            }
-    
+
             // Function to update the selectedEmployees array and set its value in a hidden input
             function updateSelectedEmployees() {
                 selectedEmployees.length = 0;
@@ -204,26 +405,19 @@
                 rowCheckboxes.forEach(checkbox => {
                     checkbox.checked = this.checked;
                 });
-                updateResendButtonState();
                 updateSelectedEmployees();
             });
     
             // Event listener for each row checkbox
             rowCheckboxes.forEach(function(checkbox) {
                 checkbox.addEventListener('change', function() {
-                    updateResendButtonState();
                     updateSelectedEmployees();
                 });
             });
     
             // Initialize the resend button state and selected employees on page load
-            updateResendButtonState();
             updateSelectedEmployees();
-    
-            // Add event listener to submit the form when the resend button is clicked
-            resendButton.addEventListener('click', function() {
-                form.submit();
-            });
+
         });
     </script>    
 {% endblock %}

@@ -296,8 +296,7 @@ class ResetPasswordRequestView(APIView):
             reset_password_token.save()
 
             reset_password_link = (
-                f'{settings.BASE_RESET_PASSWORD_URL}'
-                f'?code={reset_password_token.token}'
+                f'{settings.BASE_RESET_PASSWORD_URL}?code={reset_password_token.token}'
             )
             response = send_reset_password_email(
                 email=request_email, reset_password_link=reset_password_link

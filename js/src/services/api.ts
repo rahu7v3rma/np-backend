@@ -12,8 +12,14 @@ export const getProducts = async (
   supplierId?: number,
   categoryId?: number,
   tagId?: number,
+  campaignId?: number,
+  employeeGroupId?: number,
+  product_kind?: string,
+  quickOfferId?: number,
   query?: string,
   productdIds?: number[],
+  googlePriceMin?: number,
+  googlePriceMax?: number,
 ) => {
   const body = {
     page: page,
@@ -28,8 +34,14 @@ export const getProducts = async (
     supplier_id: supplierId,
     category_id: categoryId,
     tag_id: tagId,
+    campaign_id: campaignId,
+    employee_group_id: employeeGroupId,
+    product_kind,
+    quick_offer_id: quickOfferId,
     query,
     product_ids: productdIds,
+    google_price_min: googlePriceMin,
+    google_price_max: googlePriceMax,
   };
 
   return await _callAPI('inventory/product', 'POST', body);
@@ -37,6 +49,20 @@ export const getProducts = async (
 
 export const getCatgoriesSuppliersTags = async () => {
   return await _callAPI('campaign/categories-suppliers-tags', 'GET');
+};
+
+export const updateOrganizationProduct = async (
+  organizationId: number,
+  productId: number,
+  price: number,
+) => {
+  const body = {
+    organization: organizationId,
+    product: productId,
+    price,
+  };
+
+  return await _callAPI('campaign/organization-product', 'PUT', body);
 };
 
 type Method = 'GET' | 'POST' | 'PUT' | 'DELETE' | 'OPTIONS' | 'HEAD' | 'PATCH';
@@ -57,7 +83,7 @@ function _callAPI(
   };
 
   // for POST requests we need to add the csrf token if there is one
-  if (method === 'POST') {
+  if (method === 'POST' || method === 'PUT') {
     const csrfTokenInput = document?.querySelector(
       '[name=csrfmiddlewaretoken]',
     );

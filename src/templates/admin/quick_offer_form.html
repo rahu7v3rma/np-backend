@@ -103,7 +103,6 @@ $(document).ready(()=>{
   }
 
   $(auth_method).change((e)=>{
-    $([auth_id, phone_number, email].join(',')).val('');
     handle_auth_method_change(e.target.value);
   });
   if('{{ wizard.steps.current }}' === '0'){
@@ -211,6 +210,29 @@ $(document).ready(()=>{
       }
     }
   });
+</script>
+<script>
+  $(document).ready(()=>{
+    const handleOrganizationChange = () => {
+      const organizationId = $('#id_0-organization').val();
+      $.get(`/campaign/organization/${organizationId}`).then((response)=>{
+        if(response?.data?.manager_email){
+          $('#id_0-email').val(response.data.manager_email);
+        }
+        if(response?.data?.manager_phone_number){
+          $('#id_0-phone_number').val(response.data.manager_phone_number);
+        }
+      });
+    }
+    window.dismissAddRelatedObjectPopupOriginal = window.dismissAddRelatedObjectPopup;
+    window.dismissAddRelatedObjectPopup = (win, newId, newRepr) => {      
+      window.dismissAddRelatedObjectPopupOriginal(win, newId, newRepr);
+      if(win.name==='id_0-organization__1'){
+        handleOrganizationChange();
+      }
+    }
+    $('#id_0-organization').change(handleOrganizationChange)
+  })
 </script>
 
 <link rel="stylesheet" href="{% static "admin/css/forms.css" %}">

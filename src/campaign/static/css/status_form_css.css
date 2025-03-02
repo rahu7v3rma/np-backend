@@ -1,0 +1,153 @@
+.checkbox-dropdown {
+    width: 200px;
+    padding: 10px;
+    position: relative;
+    margin-left: 20px;
+    border: 1px solid var(--border-color);
+    border-radius: 4px;
+    user-select: none;
+
+}
+
+/* Display CSS arrow to the right of the dropdown text */
+.checkbox-dropdown:after {
+    content: '';
+    height: 0;
+    position: absolute;
+    width: 0;
+    border: solid black;
+    border-width: 0 1px 1px 0;
+    top: 50%;
+    right: 10px;
+    margin-top: -3px;
+    padding: 3px;
+    transform: rotate(45deg);
+    -webkit-transform: rotate(45deg);
+}
+
+/* Reverse the CSS arrow when the dropdown is active */
+.checkbox-dropdown.is-active:after {
+    transform: rotate(-135deg);
+    -webkit-transform: rotate(-135deg);
+}
+
+.checkbox-container {
+    z-index: 1;
+    position: absolute;
+    top: 100%; /* align the dropdown right below the dropdown text */
+    opacity: 0; /* hide the dropdown */
+   
+    transition: opacity 0.4s ease-in-out;
+    overflow: scroll;
+    overflow-x: hidden;
+    pointer-events: none; /* avoid mouse click events inside the dropdown */
+    width: 400px;
+    right: 0;
+}
+
+.checkbox-dropdown-list {
+    list-style: none;
+    padding: 0;
+    border-top: none;
+    border: 1px solid var(--border-color);
+    border-radius: 4px;
+    margin-left: 180px;
+    background-color: white;
+}
+.is-active .checkbox-container {
+    opacity: 1; /* display the dropdown */
+    pointer-events: auto; /* make sure that the user still can select checkboxes */
+}
+
+.checkbox-dropdown-list li label {
+    display: flex;
+    text-align: center;
+    gap: 4px;
+    border-bottom: 1px solid silver;
+    padding: 10px;
+   
+    transition: all 0.2s ease-out;
+}
+
+.checkbox-dropdown-list li  {
+    padding: 0px;
+    list-style: none;
+}
+
+.checkbox-dropdown-list li label:hover {
+    background-color: #555;
+    color: white;
+}
+
+.sms-preview-container {
+    display: None;
+}
+
+.email-preview-container {
+    display: None;
+}
+
+.preview-container {
+    z-index: 1;
+    position: absolute;
+    top: 100%;
+    background-color: white;
+    padding: 16px;
+    border: 1px solid black;
+    border-radius: 16px;
+    font-size: 16px;
+    font-weight: 600;
+    transition: opacity 0.4s ease-in-out;
+    overflow: scroll;
+    overflow-x: hidden;
+    pointer-events: none; /* avoid mouse click events inside the dropdown */
+    width: 400px;
+    right: 0;
+    margin-top: 16px;
+}
+
+.employee-preview {
+    font-weight: 400;
+    background-color: white;
+    padding: 8px;
+}
+
+.sms-preview-text {
+    font-weight: 600;
+    align-items: center;
+    display: flex;
+    font-size: 14px;
+}
+
+.mail-preview-text {
+    font-weight: 600;
+    align-items: center;
+    display: flex;
+    font-size: 14px;
+}
+
+.sms-preview-content {
+    font-size: 14px;
+}
+
+.mail-preview-content {
+    font-size: 14px;
+}
+
+.mail-preview-text::before, .sms-preview-text::before{
+    content: '';
+    display: inline-block;
+    width: 7.5px;
+    height: 7.5px;
+    -moz-border-radius: 7.5px;
+    -webkit-border-radius: 7.5px;
+    border-radius: 7.5px;
+    background-color: black;
+    margin-right: 4px;
+}
+
+.send-invitation-wrapper{
+    width: 100%;
+    display: flex;
+    justify-content: center;
+}

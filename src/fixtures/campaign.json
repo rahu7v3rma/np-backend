@@ -101,7 +101,7 @@
       "start_date_time": "2024-05-15T13:26:27.847Z",
       "end_date_time": "2030-05-22T14:54:50.924Z",
       "code": "f6178ba338e98479",
-      "campaign_type": "EVENT",
+      "campaign_type": "NORMAL",
       "ship_to": "TO_OFFICE",
       "status": "ACTIVE",
       "login_page_title": "",
@@ -130,7 +130,36 @@
       "start_date_time": "2024-05-15T13:26:27.847Z",
       "end_date_time": "2030-05-22T14:54:50.924Z",
       "code": "f39ae305381c8d3a",
-      "campaign_type": "EVENT",
+      "campaign_type": "NORMAL",
+      "ship_to": "TO_OFFICE",
+      "status": "ACTIVE",
+      "login_page_title": "",
+      "login_page_subtitle": "",
+      "main_page_first_banner_title": "",
+      "main_page_first_banner_subtitle": "",
+      "main_page_first_banner_image": "",
+      "main_page_first_banner_mobile_image": "",
+      "main_page_second_banner_title": "",
+      "main_page_second_banner_subtitle": "",
+      "main_page_second_banner_background_color": "",
+      "main_page_second_banner_text_color": "",
+      "sms_sender_name": "",
+      "sms_welcome_text": "",
+      "email_welcome_text": ""
+    }
+  },
+  {
+    "model": "campaign.campaign",
+    "pk": 3,
+    "fields": {
+      "organization_id": 1,
+      "name": "campaign name 1",
+      "name_en": "campaign name en 1",
+      "name_he": "campaign name he 1",
+      "start_date_time": "2024-05-15T13:26:27.847Z",
+      "end_date_time": "2030-05-22T14:54:50.924Z",
+      "code": "f6178ba338e98472",
+      "campaign_type": "WALLET",
       "ship_to": "TO_OFFICE",
       "status": "ACTIVE",
       "login_page_title": "",
@@ -169,12 +198,22 @@
     }
   },
   {
+    "model": "campaign.campaignemployee",
+    "pk": 3,
+    "fields": {
+      "campaign": 3,
+      "employee": 1,
+      "first_login": null,
+      "last_login": null
+    }
+  },
+  {
     "model": "campaign.employeegroupcampaign",
     "pk": 1,
     "fields": {
       "campaign": 1,
       "employee_group": 1,
-      "budget_per_employee": 1
+      "budget_per_employee": 1000
     }
   },
   {
@@ -183,7 +222,7 @@
     "fields": {
       "campaign": 1,
       "employee_group": 2,
-      "budget_per_employee": 2
+      "budget_per_employee": 2000
     }
   },
   {
@@ -192,6 +231,24 @@
     "fields": {
       "campaign": 2,
       "employee_group": 3,
+      "budget_per_employee": 3000
+    }
+  },
+  {
+    "model": "campaign.employeegroupcampaign",
+    "pk": 4,
+    "fields": {
+      "campaign": 3,
+      "employee_group": 1,
+      "budget_per_employee": 3
+    }
+  },
+  {
+    "model": "campaign.employeegroupcampaign",
+    "pk": 4,
+    "fields": {
+      "campaign": 3,
+      "employee_group": 1,
       "budget_per_employee": 3
     }
   },
@@ -209,6 +266,16 @@
     "model": "campaign.employeegroupcampaignproduct",
     "pk": 3,
     "fields": { "employee_group_campaign_id": 3, "product_id": 3 }
+  },
+  {
+    "model": "campaign.employeegroupcampaignproduct",
+    "pk": 4,
+    "fields": { "employee_group_campaign_id": 4, "product_id": 3 }
+  },
+  {
+    "model": "campaign.employeegroupcampaignproduct",
+    "pk": 5,
+    "fields": { "employee_group_campaign_id": 1, "product_id": 4 }
   },
   {
     "model": "campaign.cart",
@@ -240,6 +307,13 @@
     "pk": 2,
     "fields": {
       "campaign_employee_id": 2
+    }
+  },
+  {
+    "model": "campaign.cart",
+    "pk": 3,
+    "fields": {
+      "campaign_employee_id": 3
     }
   },
   { "model": "campaign.quickoffertag", "pk": 1, "fields": { "name": "tag1" } },
@@ -291,11 +365,17 @@
       "phone_number": "+972501234567",
       "email": "valid@email.com",
       "nicklas_status": "WAITING_TO_CLIENT",
-      "client_status": "READY_TO_CHECK",
       "last_login": null,
       "otp_secret": null,
-      "tags": [1],
-      "products": [1]
+      "tags": [1]
+    }
+  },
+    {
+    "model": "campaign.quickofferproduct",
+    "pk": 1,
+    "fields": {
+      "quick_offer": 1,
+      "product": 1
     }
   }
 ]

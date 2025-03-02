@@ -5,11 +5,8 @@ from django.conf import settings
 from django.core.management.base import BaseCommand
 import pika
 
-from logistics.models import (
-    LogisticsCenterEnum,
-    LogisticsCenterMessage,
-    LogisticsCenterMessageTypeEnum,
-)
+from logistics.enums import LogisticsCenterEnum, LogisticsCenterMessageTypeEnum
+from logistics.models import LogisticsCenterMessage
 from logistics.tasks import process_logistics_center_message
 
 

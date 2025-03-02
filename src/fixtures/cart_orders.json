@@ -56,7 +56,7 @@
             "start_date_time": "2024-05-10T14:38:30Z",
             "end_date_time": "2024-05-10T14:38:32Z",
             "code": "6f3a38927c14bf98",
-            "campaign_type": "CampaignTypeEnum.EVENT",
+            "campaign_type": "NORMAL",
             "ship_to": "CampaignShippingEnum.TO_OFFICE",
             "status": "ACTIVE",
             "login_page_title": "",
@@ -85,7 +85,7 @@
             "start_date_time": "2024-05-10T14:38:30Z",
             "end_date_time": "2024-05-10T14:38:32Z",
             "code": "3694729ff37b5ad3",
-            "campaign_type": "CampaignTypeEnum.EVENT",
+            "campaign_type": "NORMAL",
             "ship_to": "CampaignShippingEnum.TO_OFFICE",
             "status": "ACTIVE",
             "login_page_title": "",
@@ -142,7 +142,8 @@
             "campaign": 1,
             "employee": 1,
             "first_login": null,
-            "last_login": null
+            "last_login": null,
+             "total_budget": 1000
         }
     },
     {
@@ -152,7 +153,8 @@
             "campaign": 2,
             "employee": 1,
             "first_login": null,
-            "last_login": null
+            "last_login": null,
+             "total_budget": 1000
         }
     },
     {
@@ -185,7 +187,8 @@
             "campaign": 1,
             "employee": 2,
             "first_login": null,
-            "last_login": null
+            "last_login": null,
+            "total_budget": 1000
         }
     },
     {

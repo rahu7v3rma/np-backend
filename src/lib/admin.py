@@ -12,6 +12,15 @@ from django.utils.datastructures import MultiValueDict
 from modeltranslation.admin import TranslationAdmin
 from openpyxl import Workbook, load_workbook
 
+from inventory.models import (
+    ColorVariation,
+    ProductColorVariationImage,
+    ProductTextVariation,
+    ProductVariation,
+    TextVariation,
+    Variation,
+)
+
 
 class XlsxImportForm(forms.Form):
     xlsx_file = forms.FileField(widget=forms.FileInput(attrs={'accept': '.xlsx'}))
@@ -103,22 +112,61 @@ class ImportableExportableAdmin(TranslationAdmin):
         )
         worksheet = workbook.active
 
-        # read first row as column names
-        columns = []
-        for row in worksheet.iter_rows(
-            max_row=1, max_col=worksheet.max_column, values_only=True
-        ):
-            for cell_idx, cell_value in enumerate(row):
-                if cell_value:
-                    if cell_value in self.import_excluded_fields:
-                        self.import_excluded_fields_indexes.append(cell_idx)
-                        continue
-                    columns.append(cell_value)
-                else:
-                    break
+        # Set of static columns to identify the variation columns
+        static_columns = {
+            'id',
+            'brand',
+            'supplier',
+            'reference',
+            'name_en',
+            'name_he',
+            'product_kind',
+            'voucher_type',
+            'client_discount_rate',
+            'supplier_discount_rate',
+            'product_type',
+            'description_en',
+            'description_he',
+            'sku',
+            'link',
+            'active',
+            'cost_price',
+            'delivery_price',
+            'logistics_rate_cost_percent',
+            'total_cost',
+            'google_price',
+            'sale_price',
+            'technical_details_en',
+            'technical_details_he',
+            'warranty_en',
+            'warranty_he',
+            'exchange_value',
+            'exchange_policy_en',
+            'exchange_policy_he',
+            'categories',
+            'tags',
+            'active_campaigns',
+            'product_quantity',
+        }
 
-        # errors is a dict with keys being error messages and values being
-        # lists of row numbers so the imported file can be fixed
+        # Read the first row as column names
+        columns = [
+            cell_value
+            for row in worksheet.iter_rows(
+                max_row=1, max_col=worksheet.max_column, values_only=True
+            )
+            for cell_value in row
+            if cell_value
+        ]
+
+        # It will check with the help of static columns if its a variation column
+        variation_columns = {}
+        for idx, site_name in enumerate(columns):
+            if site_name not in static_columns:
+                variation = Variation.objects.filter(site_name=site_name).first()
+                if not variation:
+                    raise ValueError(f"Variation '{site_name}' not found")
+                variation_columns[idx] = site_name
         errors = {}
 
         records_created = 0
@@ -146,7 +194,11 @@ class ImportableExportableAdmin(TranslationAdmin):
                     if col_idx in self.import_excluded_fields_indexes:
                         shift += 1
 
-                    if current_column not in self.import_related_fields:
+                    if (
+                        current_column not in self.import_related_fields
+                        and current_column not in variation_columns.values()
+                        and current_column != 'active_campaigns'
+                    ):
                         parsed_value = self.import_parse_field(
                             current_column,
                             row[col_idx + shift],
@@ -164,12 +216,16 @@ class ImportableExportableAdmin(TranslationAdmin):
                         record = self.model.objects.get(pk=record_pk)
                         for k, v in record_field_values.items():
                             setattr(record, k, v)
+                        if not record.cost_price:
+                            record.cost_price = 0
                         record.save()
 
                         records_updated += 1
                     # handle the case when the product is not found
                     except self.model.DoesNotExist:
                         record = self.model(**record_field_values)
+                        if not record.cost_price:
+                            record.cost_price = 0
                         record.full_clean()
                         record.save()
 
@@ -177,6 +233,8 @@ class ImportableExportableAdmin(TranslationAdmin):
                 else:
                     # create record
                     record = self.model(**record_field_values)
+                    if not record.cost_price:
+                        record.cost_price = 0
                     record.full_clean()
                     record.save()
 
@@ -194,6 +252,174 @@ class ImportableExportableAdmin(TranslationAdmin):
                 for k, v in record_field_multi_values.items():
                     getattr(record, k).set(v)
 
+                product_kind = row[columns.index('product_kind')]
+                if product_kind.lower() == 'variation':
+                    # Check if any variation column has data for this product
+                    has_variation_data = any(
+                        row[variation_index] for variation_index in variation_columns
+                    )
+
+                    if not has_variation_data:
+                        # No variation data in any relevant column
+                        # delete existing variations if exists
+                        ProductVariation.objects.filter(product=record).delete()
+                        # saving the product as it does not have any variation
+                        if not record.cost_price:
+                            record.cost_price = 0
+                        record.save()
+                        # Continue on next row/product
+                        continue
+
+                    for variation_index, site_name in variation_columns.items():
+                        variation = Variation.objects.filter(
+                            site_name=site_name
+                        ).first()
+                        # Extract the list of variations from the current Excel row
+                        list_variations = []
+                        if row[variation_index]:
+                            list_variations = [
+                                item.strip() for item in row[variation_index].split(',')
+                            ]
+                        new_values = set(list_variations)
+                        # Fetch existing variations from the database
+                        # for this product and variation
+                        product_variation = ProductVariation.objects.filter(
+                            product=record, variation=variation
+                        ).first()
+                        existing_values = set()
+                        if product_variation:
+                            if (
+                                product_variation.variation.variation_kind
+                                == Variation.VariationKindEnum.COLOR.name
+                            ):
+                                product_color_variation_images = (
+                                    ProductColorVariationImage.objects.filter(
+                                        product_variation=product_variation,
+                                        product=record,
+                                    ).all()
+                                )
+                                for (
+                                    product_color_variation_image
+                                ) in product_color_variation_images:
+                                    existing_values.add(
+                                        product_color_variation_image.color.name
+                                    )
+                            else:
+                                for (
+                                    text_variation
+                                ) in product_variation.variation.text_variation.all():
+                                    existing_values.add(text_variation.text)
+
+                        # Find variations to add and remove
+                        to_add = new_values - existing_values
+                        to_remove = existing_values - new_values
+
+                        # Add new variations
+                        for value in to_add:
+                            if (
+                                variation.variation_kind
+                                == Variation.VariationKindEnum.COLOR.name
+                            ):
+                                color_variation = ColorVariation.objects.filter(
+                                    name=value
+                                ).first()
+                                if not color_variation:
+                                    raise ValueError(
+                                        f"Color variation '{value}' not found."
+                                    )
+
+                                try:
+                                    product_variation, _ = (
+                                        ProductVariation.objects.get_or_create(
+                                            product=record, variation=variation
+                                        )
+                                    )
+                                except ProductVariation.MultipleObjectsReturned:
+                                    product_variation = ProductVariation.objects.filter(
+                                        product=record, variation=variation
+                                    ).first()
+                                short_name = ProductColorVariationImage
+                                try:
+                                    short_name.objects.get_or_create(
+                                        product_variation=product_variation,
+                                        product=record,
+                                        variation=variation,
+                                        color=color_variation,
+                                    )
+                                except short_name.MultipleObjectsReturned:
+                                    pass
+
+                            elif (
+                                variation.variation_kind
+                                == Variation.VariationKindEnum.TEXT.name
+                            ):
+                                text_variation = TextVariation.objects.filter(
+                                    text=value
+                                ).first()
+                                if not text_variation:
+                                    raise ValueError(
+                                        f"Text variation '{value}' not found."
+                                    )
+
+                                try:
+                                    product_variation, _ = (
+                                        ProductVariation.objects.get_or_create(
+                                            product=record, variation=variation
+                                        )
+                                    )
+                                except ProductVariation.MultipleObjectsReturned:
+                                    product_variation = ProductVariation.objects.filter(
+                                        product=record, variation=variation
+                                    ).first()
+                                try:
+                                    ProductTextVariation.objects.get_or_create(
+                                        product_variation=product_variation,
+                                        product=record,
+                                        variation=variation,
+                                        text=text_variation,
+                                    )
+                                except ProductTextVariation.MultipleObjectsReturned:
+                                    pass
+
+                        # Remove stale variations
+                        for value in to_remove:
+                            if (
+                                variation.variation_kind
+                                == Variation.VariationKindEnum.COLOR.name
+                            ):
+                                color_variation = ColorVariation.objects.filter(
+                                    name=value
+                                ).first()
+                                if color_variation:
+                                    ProductColorVariationImage.objects.filter(
+                                        product_variation__product=record,
+                                        variation=variation,
+                                        color=color_variation,
+                                    ).delete()
+                            elif (
+                                variation.variation_kind
+                                == Variation.VariationKindEnum.TEXT.name
+                            ):
+                                text_variation = TextVariation.objects.filter(
+                                    text=value
+                                ).first()
+                                if text_variation:
+                                    ProductTextVariation.objects.filter(
+                                        product_variation__product=record,
+                                        variation=variation,
+                                        text=text_variation,
+                                    ).delete()
+
+                        # Clean up empty ProductVariation objects (if any)
+                        ProductVariation.objects.filter(
+                            product=record,
+                            variation=variation,
+                            productcolorvariationimage=None,
+                            producttextvariation=None,
+                        ).delete()
+
+                if not record.cost_price:
+                    record.cost_price = 0
                 record.save()
             except ValidationError as ex:
                 for mk in ex.message_dict.keys():

@@ -1,0 +1,81 @@
+{% extends 'admin/change_form.html' %}
+
+{% block extrastyle %}
+    {{ block.super }}
+    <script src="https://ajax.googleapis.com/ajax/libs/jquery/2.1.3/jquery.min.js"></script>
+    <script>
+      document.addEventListener("DOMContentLoaded", function () {
+        const authMethodField = document.getElementById("id_auth_method");
+
+        function handleLoginType(newLoginType) {
+            const employeeLoginTypeFields = document.querySelectorAll(
+              "select[id^='id_employee_set'][id$='-login_type']"
+            );
+
+            employeeLoginTypeFields.forEach(function (field) {
+                field.value = newLoginType;
+            });
+        }
+
+        if (authMethodField) {
+          authMethodField.addEventListener("change", function () {
+            const newLoginType = authMethodField.value;
+            handleLoginType(newLoginType);
+          });
+        }
+      });
+
+      $(document).ready(() => {
+            $('fieldset>h2').append($('#searchbar'));
+            const debounce = (func, delay = 500) => {
+                let timer;
+                return (...args) => {
+                    clearTimeout(timer);
+                    timer = setTimeout(() => {
+                        func.apply(this, args);
+                    }, delay);
+                };
+            };
+
+            const handleSearch = () => {
+                const inputSelector = "input#searchbar";
+                const input = $(inputSelector);
+
+                const performSearch = debounce((e) => {
+                    const query = e.target.value;
+                    const params = new URLSearchParams(window.location.search);
+
+                    if (query) {
+                        params.set('q', query);
+                    } else {
+                        params.delete('q');
+                    }
+
+                    window.location.search = params.toString();
+                });
+
+                if (window.location.search.includes('q=')) {
+                    input.focus();
+                    const currentValue = (new URLSearchParams(window.location.search)).get('q');
+                    input.val(currentValue);
+                }
+
+                input.on('input', performSearch);
+            };
+            handleSearch();
+        });
+    </script>
+<style>
+    #searchbar {
+      margin-left: 10px;
+    }
+</style>
+{% endblock %}
+
+{% block field_sets %}
+    {{ block.super }}
+    <input name="search" id="searchbar" placeholder="search employees" />
+    {% if inline_admin_formsets.0.formset|length < 2 %}
+      <p>No employees found</p>
+    {% endif %}
+{% endblock %}

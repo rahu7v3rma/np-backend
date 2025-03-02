@@ -1,0 +1,8 @@
+<tr class="inline-color">
+    <th colspan="2">Colors</th>
+</tr>
+{% for inline_admin_form in inline_admin_formset %}
+<tr>
+    <td colspan="2">{{ inline_admin_form.form }}</td>
+</tr>
+{% endfor %}

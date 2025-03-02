@@ -1,0 +1,151 @@
+[
+{
+    "model": "inventory.colorvariation",
+    "pk": 1,
+    "fields": {
+        "name": "red",
+        "color_code": "#f50000"
+    }
+},
+{
+    "model": "inventory.colorvariation",
+    "pk": 2,
+    "fields": {
+        "name": "green",
+        "color_code": "#06ef58"
+    }
+},
+{
+    "model": "inventory.colorvariation",
+    "pk": 3,
+    "fields": {
+        "name": "black",
+        "color_code": "#000000"
+    }
+},
+{
+    "model": "inventory.textvariation",
+    "pk": 1,
+    "fields": {
+        "text": "L",
+        "text_en": "L",
+        "text_he": "L he"
+    }
+},
+{
+    "model": "inventory.textvariation",
+    "pk": 2,
+    "fields": {
+        "text": "M",
+        "text_en": "M",
+        "text_he": "M he"
+    }
+},
+{
+    "model": "inventory.textvariation",
+    "pk": 3,
+    "fields": {
+        "text": "XL",
+        "text_en": "XL",
+        "text_he": "XL he"
+    }
+},
+{
+    "model": "inventory.variation",
+    "pk": 1,
+    "fields": {
+        "variation_kind": "COLOR",
+        "system_name": "color",
+        "system_name_en": "color",
+        "system_name_he": "color he",
+        "site_name": "color",
+        "site_name_en": "color",
+        "site_name_he": "color he",
+        "color_variation": [
+            1,
+            2,
+            3
+        ],
+        "text_variation": []
+    }
+},
+{
+    "model": "inventory.variation",
+    "pk": 2,
+    "fields": {
+        "variation_kind": "TEXT",
+        "system_name": "size en",
+        "system_name_en": "size en",
+        "system_name_he": "size he",
+        "site_name": "size en",
+        "site_name_en": "size en",
+        "site_name_he": "size he",
+        "color_variation": [],
+        "text_variation": [
+            1,
+            2,
+            3
+        ]
+    }
+},
+{
+    "model": "inventory.productvariation",
+    "pk": 3,
+    "fields": {
+        "product": 1,
+        "variation": 1,
+        "is_enabled": true
+    }
+},
+{
+    "model": "inventory.productvariation",
+    "pk": 4,
+    "fields": {
+        "product": 1,
+        "variation": 2,
+        "is_enabled": true
+    }
+},
+{
+    "model": "inventory.productcolorvariationimage",
+    "pk": 3,
+    "fields": {
+        "product_variation": 3,
+        "product": 1,
+        "variation": 1,
+        "color": 1,
+        "image": "b71d7bdd-42da-4c53-8925-b51431359fad.png"
+    }
+},
+{
+    "model": "inventory.productcolorvariationimage",
+    "pk": 4,
+    "fields": {
+        "product_variation": 3,
+        "product": 1,
+        "variation": 1,
+        "color": 2,
+        "image": "68131951-8562-486b-b654-38e1547bd680.jpeg"
+    }
+},
+{
+    "model": "inventory.producttextvariation",
+    "pk": 3,
+    "fields": {
+        "product_variation": 4,
+        "product": 1,
+        "variation": 2,
+        "text": 1
+    }
+},
+{
+    "model": "inventory.producttextvariation",
+    "pk": 4,
+    "fields": {
+        "product_variation": 4,
+        "product": 1,
+        "variation": 2,
+        "text": 2
+    }
+}
+]

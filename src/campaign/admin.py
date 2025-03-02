@@ -4,17 +4,28 @@ import json
 import logging
 from typing import Any
 
+from django.conf import settings
 from django.contrib import admin, messages
+from django.core.exceptions import ValidationError
 from django.db.models import (
+    Case,
+    CharField,
     Count,
+    DateField,
+    DecimalField,
     ExpressionWrapper,
     F,
     FilteredRelation,
     FloatField,
+    OuterRef,
+    Prefetch,
     Q,
+    Subquery,
+    Sum,
     Value,
+    When,
 )
-from django.db.models.functions import Cast, Round
+from django.db.models.functions import Cast, Coalesce, Concat, ExtractHour, Round
 from django.http import HttpResponse
 from django.shortcuts import redirect
 from django.template.response import TemplateResponse
@@ -23,12 +34,17 @@ from django.utils.datastructures import MultiValueDict
 from django.utils.html import format_html
 from django.utils.http import urlencode
 from django.utils.safestring import mark_safe
+from django_admin_inline_paginator.admin import TabularInlinePaginated
 from openpyxl import Workbook, load_workbook
 from openpyxl.formatting.rule import CellIsRule
 from openpyxl.styles import PatternFill
 
+from campaign.tasks import send_campaign_employee_invitation
 from inventory.models import Product
-from lib.admin import ImportableExportableAdmin, custom_titled_filter
+from inventory.utils import fill_message_template_email, fill_message_template_sms
+from lib.admin import ImportableExportableAdmin, RecordImportError, custom_titled_filter
+from lib.models import StringAgg
+from logistics.models import PurchaseOrderProduct
 
 from .admin_actions import (
     CampaignActionsMixin,
@@ -41,6 +57,7 @@ from .admin_forms import (
     ImportEmployeeGroupForm,
     ImportPricelistForm,
     OrderForm,
+    OrderProductInlineForm,
     OrderProductInlineFormset,
 )
 from .admin_views import (
@@ -48,13 +65,16 @@ from .admin_views import (
     CampaignImpersonateView,
     CampaignInvitationView,
     QuickOfferCreationWizard,
+    QuickOfferImpersonateView,
 )
 from .models import (
     Campaign,
     CampaignEmployee,
     Employee,
+    EmployeeAuthEnum,
     EmployeeGroup,
     EmployeeGroupCampaign,
+    EmployeeGroupCampaignProduct,
     Order,
     OrderProduct,
     Organization,
@@ -62,7 +82,18 @@ from .models import (
     QuickOffer,
     QuickOfferTag,
 )
-from .utils import format_with_none_replacement
+from .serializers import (
+    EmployeeReportSerializer,
+    MoneyProductSerializerCampaignAdmin,
+    PhysicalProductSerializerCampaignAdmin,
+)
+from .utils import (
+    format_with_none_replacement,
+    get_campaign_employees,
+    get_xlsx_http_campaign_response,
+    get_xlsx_http_products_response,
+    get_xlsx_http_response,
+)
 
 
 logger = logging.getLogger(__name__)
@@ -505,11 +536,11 @@ class EmployeeAdmin(ImportableExportableAdmin):
     )
 
     export_fields = (
+        'id',
         'employee_group__name',
-        'first_name_en',
-        'first_name_he',
-        'last_name_en',
-        'last_name_he',
+        'full_name_en',
+        'full_name_he',
+        'login_type',
         'auth_id',
         'email',
         'phone_number',
@@ -533,6 +564,134 @@ class EmployeeAdmin(ImportableExportableAdmin):
         ]
         return custom_urls + urls
 
+    def replace_import_related_fields(self, record_field_values: dict):
+        full_name_en = record_field_values.pop('full_name_en', None)
+        if full_name_en:
+            full_name = str(full_name_en).split(' ')
+            first_name_en = str(full_name[0])
+            last_name_en = str(' '.join(full_name[1:]))
+            record_field_values.update(
+                {'first_name_en': first_name_en, 'last_name_en': last_name_en}
+            )
+
+        full_name_he = record_field_values.pop('full_name_he', None)
+        if full_name_he:
+            full_name = str(full_name_he).split(' ')
+            first_name_he = str(full_name[0])
+            last_name_he = str(' '.join(full_name[1:]))
+            record_field_values.update(
+                {'first_name_he': first_name_he, 'last_name_he': last_name_he}
+            )
+
+        return record_field_values
+
+    def import_parse_and_save_xlsx_data(
+        self, extra_params: dict[str, Any], request_files: MultiValueDict
+    ) -> tuple[int, int]:
+        # load main xlsx file
+        workbook = load_workbook(
+            request_files.pop('xlsx_file')[0], data_only=True, read_only=True
+        )
+        worksheet = workbook.active
+
+        columns = self.export_fields
+
+        errors = {}
+
+        records_created = 0
+        records_updated = 0
+
+        for row_idx, row in enumerate(
+            worksheet.iter_rows(
+                min_row=2,
+                max_row=worksheet.max_row,
+                max_col=len(columns) + 1,
+                values_only=True,
+            )
+        ):
+            # break if we hit an empty row since this should be th end of the
+            # sheet
+            if not row or all(v is None for v in row):
+                break
+
+            record_field_values = {}
+
+            try:
+                shift = 0
+                for col_idx, current_column in enumerate(columns):
+                    if col_idx in self.import_excluded_fields_indexes:
+                        shift += 1
+
+                    if current_column == 'employee_group__name':
+                        current_column = 'employee_group'
+                    parsed_value = self.import_parse_field(
+                        current_column,
+                        row[col_idx + shift],
+                        extra_params,
+                        request_files,
+                    )
+                    record_field_values[current_column] = parsed_value
+
+                record_field_values = self.replace_import_related_fields(
+                    record_field_values=record_field_values
+                )
+
+                # the pk may or may not have been supplied
+                record_pk = record_field_values.pop(self.model._meta.pk.name, None)
+
+                if record_pk:
+                    # update existing record
+                    try:
+                        record = self.model.objects.get(pk=record_pk)
+                        for k, v in record_field_values.items():
+                            setattr(record, k, v)
+                        record.save()
+
+                        records_updated += 1
+                    # handle the case when the product is not found
+                    except self.model.DoesNotExist:
+                        record = self.model(**record_field_values)
+                        record.full_clean()
+                        record.save()
+
+                        records_created += 1
+                else:
+                    # create record
+                    record = self.model(**record_field_values)
+                    record.full_clean()
+                    record.save()
+
+                    records_created += 1
+
+            except ValidationError as ex:
+                for mk in ex.message_dict.keys():
+                    msg_details = ', '.join(
+                        [m.removesuffix('.') for m in ex.message_dict[mk]]
+                    )
+                    msg = f'{mk} - {msg_details}'
+
+                    if msg not in errors:
+                        errors[msg] = []
+
+                    # row_idx is 0-based, plus the first row is the field names
+                    errors[msg].append(row_idx + 2)
+            except (ValueError, Exception) as ex:
+                # ValueErrors are raised by model-specific import logic (for
+                # example product image matching). any other Exception should
+                # also be caught here and handled the same way
+                msg = str(ex)
+
+                if msg not in errors:
+                    errors[msg] = []
+
+                # row_idx is 0-based, plus the first row is the field names
+                errors[msg].append(row_idx + 2)
+
+        if errors:
+            raise RecordImportError(errors)
+        else:
+            return records_created, records_updated
+
     def import_parse_field(
         self,
         name: str,
@@ -543,6 +702,20 @@ class EmployeeAdmin(ImportableExportableAdmin):
         if name == 'employee_group':
             organization = Organization.objects.get(id=extra_params['organization_id'])
             return EmployeeGroup.objects.get(name=value, organization=organization)
+        if name == 'full_name_en':
+            super().import_parse_field(
+                'first_name_en', value, extra_params, extra_files
+            )
+            return super().import_parse_field(
+                'last_name_en', value, extra_params, extra_files
+            )
+        if name == 'full_name_he':
+            super().import_parse_field(
+                'first_name_he', value, extra_params, extra_files
+            )
+            return super().import_parse_field(
+                'last_name_he', value, extra_params, extra_files
+            )
 
         return super().import_parse_field(name, value, extra_params, extra_files)
 
@@ -593,16 +766,30 @@ class EmployeeAdmin(ImportableExportableAdmin):
         return queryset, use_distinct
 
 
-class EmployeeInline(admin.TabularInline):
+class EmployeeInline(TabularInlinePaginated):
     model = Employee
     extra = 1
-    exclude = ('otp_secret', 'first_name', 'last_name')
+    exclude = ('otp_secret', 'first_name', 'last_name', 'total_budget')
+
+    def get_queryset(self, request):
+        qs = super().get_queryset(request)
+        search_term = request.GET.get('q')
+        if search_term:
+            qs = qs.filter(
+                Q(first_name__icontains=search_term)
+                | Q(last_name__icontains=search_term)
+                | Q(email__icontains=search_term)
+                | Q(auth_id__icontains=search_term)
+                | Q(phone_number__icontains=search_term)
+            )
+        return qs
 
 
 @admin.register(EmployeeGroup)
 class EmployeeGroupAdmin(admin.ModelAdmin):
     form = EmployeeGroupForm
     change_list_template = 'campaign/employee_group_change_list.html'
+    change_form_template = 'admin/employee_group_change_form.html'
     list_display = ('name', 'campaign_names', 'organization', 'total_employees')
     inlines = [EmployeeInline]
     fields = (
@@ -616,6 +803,28 @@ class EmployeeGroupAdmin(admin.ModelAdmin):
         'auth_method',
     )
 
+    search_fields = (
+        'name',
+        'organization__name',
+    )
+
+    def get_search_results(self, request, queryset, search_term):
+        # Use the default search method first
+        queryset, use_distinct = super().get_search_results(
+            request, queryset, search_term
+        )
+
+        # Custom search for campaign names
+        if search_term:
+            campaign_name_search = Q(
+                employeegroupcampaign__campaign__name__icontains=search_term
+            )
+
+            campaign_query_set = self.model.objects.filter(campaign_name_search)
+            queryset = (queryset | campaign_query_set).distinct()  # Remove duplications
+
+        return queryset, use_distinct
+
     def get_readonly_fields(self, request, obj=None):
         if obj:
             return self.readonly_fields + ('organization',)
@@ -623,6 +832,7 @@ class EmployeeGroupAdmin(admin.ModelAdmin):
 
     actions = ['export_as_xlsx']
     export_fields = {
+        'Id': 'id',
         'Name': 'name',
         'Organization': 'organization__name',
         'Delivery City': 'delivery_city',
@@ -666,7 +876,6 @@ class EmployeeGroupAdmin(admin.ModelAdmin):
 
     def import_xlsx_view(self, request):
         import_form = ImportEmployeeGroupForm(request.POST, request.FILES)
-
         if import_form.is_valid():
             try:
                 employee_group_file = import_form.clean().get('employee_group_file')
@@ -682,6 +891,7 @@ class EmployeeGroupAdmin(admin.ModelAdmin):
                         continue
 
                     (
+                        _id,
                         name,
                         organization__name,
                         delivery_city,
@@ -696,16 +906,31 @@ class EmployeeGroupAdmin(admin.ModelAdmin):
                         name=organization__name
                     ).first()
 
-                    EmployeeGroup(
-                        name=name,
-                        organization=organization,
-                        delivery_city=delivery_city,
-                        delivery_street=delivery_street,
-                        delivery_street_number=delivery_street_number,
-                        delivery_apartment_number=delivery_apartment_number,
-                        delivery_location=delivery_location,
-                        auth_method=auth_method,
-                    ).save()
+                    employee_group = EmployeeGroup.objects.filter(id=_id).first()
+                    if employee_group:
+                        employee_group.name = name
+                        employee_group.delivery_city = delivery_city
+                        employee_group.delivery_street = delivery_street
+                        employee_group.delivery_street_number = delivery_street_number
+                        employee_group.delivery_apartment_number = (
+                            delivery_apartment_number
+                        )
+                        employee_group.delivery_location = delivery_location
+                        employee_group.auth_method = auth_method
+                        employee_group.save()
+
+                    else:
+                        EmployeeGroup.objects.create(
+                            name=name,
+                            organization=organization,
+                            delivery_city=delivery_city,
+                            delivery_street=delivery_street,
+                            delivery_street_number=delivery_street_number,
+                            delivery_apartment_number=delivery_apartment_number,
+                            delivery_location=delivery_location,
+                            auth_method=auth_method,
+                        )
+
                     counter = counter + 1
 
                 self.message_user(
@@ -749,6 +974,15 @@ class CampaignAdmin(admin.ModelAdmin, CampaignActionsMixin):
         'employee_site_link',
     )
 
+    search_fields = (
+        'name_en',
+        'name_he',
+        'status',
+        'organization__name_en',
+        'organization__name_he',
+    )
+
+    list_filter = ('tags',)
     change_list_template = 'campaign/campaign_change_list.html'
 
     def employee_site_link(self, obj):
@@ -816,72 +1050,575 @@ class CampaignAdmin(admin.ModelAdmin, CampaignActionsMixin):
             ),
         ]
 
-    def status_view(self, request, object_id):
-        campaign = Campaign.objects.get(pk=object_id)
-
-        if campaign.status in (
-            Campaign.CampaignStatusEnum.PENDING.name,
-            Campaign.CampaignStatusEnum.OFFER.name,
-        ):
-            status = (
-                EmployeeGroupCampaign.objects.filter(campaign_id=object_id)
-                .select_related('employee_group')
-                .values(
-                    employee_group_name=F('employee_group__name'),
-                    employee_first_name=F('employee_group__employee__first_name'),
-                    employee_last_name=F('employee_group__employee__last_name'),
-                )
+    def get_campaign_products(self, campaign: Campaign):
+        unique_product_ids = list(
+            EmployeeGroupCampaignProduct.objects.filter(
+                employee_group_campaign_id__campaign=campaign
             )
-        else:
-            raw_status = (
-                CampaignEmployee.objects.filter(campaign_id=object_id)
-                .select_related('employee', 'employee__employee_group', 'order')
-                .annotate(
-                    pending_order=FilteredRelation(
-                        'order',
-                        condition=Q(
-                            order__status__in=[
-                                Order.OrderStatusEnum.PENDING.name,
-                                Order.OrderStatusEnum.SENT_TO_LOGISTIC_CENTER.name,
-                            ]
+            .values_list('product_id', flat=True)
+            .distinct()
+        )
+
+        money_product_list = Product.objects.filter(
+            id__in=unique_product_ids, product_kind='MONEY'
+        )
+
+        physical_product_list = Product.objects.filter(
+            id__in=unique_product_ids
+        ).exclude(product_kind='MONEY')
+
+        money_serializer = MoneyProductSerializerCampaignAdmin(
+            money_product_list,
+            many=True,
+            context={'campaign': campaign},
+        )
+
+        physical_serializer = PhysicalProductSerializerCampaignAdmin(
+            physical_product_list,
+            many=True,
+            context={'campaign': campaign},
+        )
+
+        return money_serializer.data, physical_serializer.data
+
+    def get_campaign_employee_products(self, campaign: Campaign):
+        campaign_employees = CampaignEmployee.objects.filter(
+            campaign=campaign
+        ).annotate(
+            selection_date=Subquery(
+                Order.objects.filter(
+                    campaign_employee_id=OuterRef('pk'),
+                    status__in=[
+                        Order.OrderStatusEnum.PENDING.name,
+                        Order.OrderStatusEnum.SENT_TO_LOGISTIC_CENTER.name,
+                    ],
+                )
+                .order_by('-order_date_time')
+                .values('order_date_time')[:1]
+            ),
+        )
+        he_data = []
+        for campaign_employee in campaign_employees:
+            employee_serializer = EmployeeReportSerializer(
+                campaign_employee.employee
+            ).data
+
+            products = OrderProduct.objects.filter(
+                order_id__campaign_employee_id=campaign_employee,
+                order_id__status__in=[
+                    Order.OrderStatusEnum.PENDING.name,
+                    Order.OrderStatusEnum.SENT_TO_LOGISTIC_CENTER.name,
+                ],
+                quantity__gt=0,
+            ).annotate(name_he=F('product_id__product_id__name_he'))
+
+            products_dict = {}
+
+            for product in products:
+                name = product.name_he
+                quantity = product.quantity
+                products_dict.update({name: quantity + products_dict.get(name, 0)})
+
+            for name, quantity in products_dict.items():
+                he_data.append(
+                    {
+                        'סוג בחירה': 'רגיל',
+                        'תאריך בחירה': campaign_employee.selection_date.strftime(
+                            '%Y-%m-%d %H:%M'
+                        )
+                        if campaign_employee.selection_date
+                        else None,
+                        'התחברות אחרונה': campaign_employee.last_login.strftime(
+                            '%Y-%m-%d %H:%M'
+                        )
+                        if campaign_employee.last_login
+                        else None,
+                        'שם העובד': f'{employee_serializer.get("first_name_he")} '
+                        + f'{employee_serializer.get("last_name_he")}',
+                        'מייל העובד': employee_serializer.get('email'),
+                        'טלפון עובד': employee_serializer.get('phone_number'),
+                        'קבוצת עובד': employee_serializer.get('employee_group', {}).get(
+                            'name'
+                        ),
+                        'שם המוצר': name if name else None,
+                        ' מספר מוצרים שנבחרו': quantity if quantity else None,
+                    }
+                )
+
+        return he_data
+
+    def get_group_summaries_products(self, campaign: Campaign):
+        order_products = self.get_order_products(campaign=campaign).filter(
+            quantity__gt=0,
+        )
+        data = (
+            EmployeeGroupCampaign.objects.filter(campaign=campaign)
+            .prefetch_related(
+                Prefetch(
+                    'employeegroupcampaignproduct_set',
+                    queryset=EmployeeGroupCampaignProduct.objects.filter(
+                        orderproduct__id__in=order_products.values_list(
+                            'id', flat=True
+                        ),
+                    ).annotate(
+                        product_name=F('product_id__name_he'),
+                        product_kind=F('product_id__product_kind'),
+                        discount_to=F('discount_mode'),
+                        group_budget=F(
+                            'employee_group_campaign_id__budget_per_employee'
+                        ),
+                        organization_discount=Coalesce(
+                            F('organization_discount_rate'),
+                            Value(0),
+                            output_field=FloatField(),
+                        ),
+                        voucher_value=Coalesce(
+                            Case(
+                                When(
+                                    discount_mode=EmployeeGroupCampaign.DefaultDiscountTypeEnum.EMPLOYEE.name,
+                                    then=Case(
+                                        When(
+                                            organization_discount=Value(0),
+                                            then=F('group_budget'),
+                                        ),
+                                        default=F('group_budget')
+                                        / (
+                                            Value(1)
+                                            - (F('organization_discount') / Value(100))
+                                        ),
+                                        output_field=FloatField(),
+                                    ),
+                                ),
+                                default=F('group_budget'),
+                                output_field=FloatField(),
+                            ),
+                            Value(0),
+                            output_field=FloatField(),
+                        ),
+                        cost_including_p=Case(
+                            When(
+                                discount_mode=EmployeeGroupCampaign.DefaultDiscountTypeEnum.ORGANIZATION.name,
+                                then=F('group_budget')
+                                * (
+                                    Value(1)
+                                    - (
+                                        Coalesce(
+                                            F('organization_discount_rate'), Value(0)
+                                        )
+                                        / Value(100)
+                                    )
+                                ),
+                            ),
+                            default=F('group_budget'),
+                            output_field=FloatField(),
+                        ),
+                        client_discount=F('organization_discount_rate'),
+                        quantity=Coalesce(
+                            Subquery(
+                                OrderProduct.objects.filter(
+                                    product_id=OuterRef('pk'),
+                                    order_id__status__in=[
+                                        Order.OrderStatusEnum.PENDING.name,
+                                        Order.OrderStatusEnum.SENT_TO_LOGISTIC_CENTER.name,
+                                    ],
+                                )
+                                .values('product_id')
+                                .annotate(
+                                    total_unique_employees=Count(
+                                        'order_id__campaign_employee_id__employee',
+                                        distinct=True,
+                                    ),
+                                )
+                                .values('total_unique_employees')[:1],
+                            ),
+                            Value(0),
+                        ),
+                        total_cost=Coalesce(
+                            F('quantity') * F('cost_including_p'),
+                            Value(0),
+                            output_field=DecimalField(max_digits=10, decimal_places=2),
                         ),
                     ),
-                )
-                .values(
-                    campaign_employee_id=F('pk'),
-                    employee_group_name=F('employee__employee_group__name'),
-                    employee_first_name=F('employee__first_name'),
-                    employee_last_name=F('employee__last_name'),
-                    order_id=F('pending_order__pk'),
-                    ordered_products=F(
-                        'pending_order__orderproduct__product_id__product_id__name'
-                    ),
+                    to_attr='products',
                 )
             )
+            .annotate(
+                physical_quantity=Coalesce(
+                    Subquery(
+                        OrderProduct.objects.filter(
+                            product_id__employee_group_campaign_id=OuterRef('pk'),
+                            order_id__status__in=[
+                                Order.OrderStatusEnum.PENDING.name,
+                                Order.OrderStatusEnum.SENT_TO_LOGISTIC_CENTER.name,
+                            ],
+                            product_id__product_id__product_kind__in=[
+                                'PHYSICAL',
+                                'BUNDLE',
+                                'VARIATION',
+                            ],
+                        )
+                        .annotate(
+                            product_category=Case(
+                                When(
+                                    product_id__product_id__product_kind='MONEY',
+                                    then=Value('MONEY'),
+                                ),
+                                default=Value('OTHER'),
+                                output_field=CharField(),
+                            )
+                        )
+                        .values('product_category')
+                        .annotate(
+                            total_unique_employees=Count(
+                                'order_id__campaign_employee_id__employee',
+                                distinct=True,
+                            )
+                        )
+                        .values('total_unique_employees')[:1],
+                    ),
+                    Value(0),
+                ),
+                money_quantity=Coalesce(
+                    Subquery(
+                        OrderProduct.objects.filter(
+                            product_id__employee_group_campaign_id=OuterRef('pk'),
+                            order_id__status__in=[
+                                Order.OrderStatusEnum.PENDING.name,
+                                Order.OrderStatusEnum.SENT_TO_LOGISTIC_CENTER.name,
+                            ],
+                            product_id__product_id__product_kind__in=['MONEY'],
+                        )
+                        .annotate(
+                            product_category=Case(
+                                When(
+                                    product_id__product_id__product_kind='MONEY',
+                                    then=Value('MONEY'),
+                                ),
+                                default=Value('OTHER'),
+                                output_field=CharField(),
+                            )
+                        )
+                        .values('product_category')
+                        .annotate(
+                            total_unique_employees=Count(
+                                'order_id__campaign_employee_id__employee',
+                                distinct=True,
+                            )
+                        )
+                        .values('total_unique_employees')[:1],
+                    ),
+                    Value(0),
+                ),
+                all_quantity=Coalesce(
+                    Subquery(
+                        OrderProduct.objects.filter(
+                            product_id__employee_group_campaign_id=OuterRef('pk'),
+                            order_id__status__in=[
+                                Order.OrderStatusEnum.PENDING.name,
+                                Order.OrderStatusEnum.SENT_TO_LOGISTIC_CENTER.name,
+                            ],
+                        )
+                        .annotate(product_category=Value('ALL'))
+                        .values('product_category')
+                        .annotate(
+                            total_unique_employees=Count(
+                                'order_id__campaign_employee_id__employee',
+                                distinct=True,
+                            )
+                        )
+                        .values('total_unique_employees')[:1],
+                    ),
+                    Value(0),
+                ),
+            )
+        )
 
-            # we want to concat order products so we can display all ordered
-            # products in a single cell in the status form. sadly, string_agg
-            # is only supported with postgresql in django
-            concat_products_status = {}
-            for rs in raw_status:
-                key = f'{rs["campaign_employee_id"]}_{rs["order_id"]}'
+        return data
 
-                if key in concat_products_status:
-                    concat_products_status[key]['ordered_products'].append(
-                        rs['ordered_products']
-                    )
-                else:
-                    rs['ordered_products'] = (
-                        [rs['ordered_products']] if rs['ordered_products'] else []
-                    )
-                    concat_products_status[key] = rs
+    def get_order_products(self, campaign):
+        return OrderProduct.objects.filter(
+            product_id__employee_group_campaign_id__campaign=campaign,
+            order_id__status__in=[
+                Order.OrderStatusEnum.PENDING.name,
+                Order.OrderStatusEnum.SENT_TO_LOGISTIC_CENTER.name,
+            ],
+        )
 
-            for k in concat_products_status:
-                concat_products_status[k]['ordered_products'] = ', '.join(
-                    concat_products_status[k]['ordered_products']
-                )
+    def get_graph_categories_data(self, campaign):
+        order_products = self.get_order_products(campaign=campaign)
+        return list(
+            EmployeeGroupCampaignProduct.objects.filter(
+                employee_group_campaign_id__campaign=campaign,
+                product_id__in=order_products.values('product_id__product_id'),
+                orderproduct__quantity__gt=0,
+            )
+            .exclude(product_id__categories__name=None)
+            .values('product_id__categories__name')
+            .annotate(Count('product_id__categories__name'))
+            .values_list(
+                'product_id__categories__name', 'product_id__categories__name__count'
+            )
+        )
 
-            status = concat_products_status.values()
+    def get_graph_employee_group_selections(self, campaign: Campaign):
+        order_products = self.get_order_products(campaign=campaign)
+        return list(
+            EmployeeGroupCampaignProduct.objects.filter(
+                employee_group_campaign_id__campaign=campaign,
+                product_id__in=order_products.values('product_id__product_id'),
+                orderproduct__quantity__gt=0,
+            )
+            .values('employee_group_campaign_id__employee_group__name')
+            .annotate(products=Count('product_id'))
+            .values_list('employee_group_campaign_id__employee_group__name', 'products')
+        )
+
+    def get_graph_employee_choosing(self, campaign):
+        order_products = self.get_order_products(campaign=campaign)
+        choosing_employees = (
+            order_products.values('order_id__campaign_employee_id__employee__id')
+            .distinct()
+            .count()
+        )
+        total_employees = CampaignEmployee.objects.filter(campaign=campaign).count()
+        return [
+            ('normal', choosing_employees),
+            ('default', total_employees - choosing_employees),
+        ]
+
+    def get_choosing_by_day_time(self, campaign):
+        order_products = self.get_order_products(campaign=campaign)
+        choosing_by_day = list(
+            order_products.annotate(
+                day=Cast(Cast('order_id__order_date_time', DateField()), CharField())
+            )
+            .values('day')
+            .annotate(selections=Count('product_id'))
+            .order_by('-day')
+            .values_list('day', 'selections')
+        )
+
+        choosing_by_time = list(
+            order_products.values(f_time=ExtractHour('order_id__order_date_time'))
+            .annotate(selections=Count('product_id'))
+            .order_by('-f_time')
+            .annotate(
+                time=Concat(F('f_time') - 2, Value('h'), output_field=CharField())
+            )
+            .values_list('time', 'selections')
+        )
+
+        return choosing_by_day, choosing_by_time
+
+    def status_view(self, request, object_id):
+        campaign = Campaign.objects.get(pk=object_id)
+        export_type = request.GET.get('export_type')
+
+        if export_type in ['employee_orders', 'employee_budgets']:
+            # Get data with appropriate export type
+            campaign_employees = get_campaign_employees(campaign, export_type)
+
+            # Set title based on export type
+            if export_type == 'employee_orders':
+                title = 'Campaign employee orders'
+            else:
+                title = 'Campaign employee budgets'
+
+            xlsx_http_response = get_xlsx_http_response(
+                title,
+                campaign_employees,
+            )
+            return xlsx_http_response
+        elif export_type == 'product':
+            money_products, physical_products = self.get_campaign_products(campaign)
+            xlsx_http_response = get_xlsx_http_products_response(
+                title='Campaign products',
+                physical_products=physical_products,
+                money_products=money_products,
+            )
+            return xlsx_http_response
+
+        elif export_type == 'campaign':
+            group_summaries_products = self.get_group_summaries_products(campaign)
+            main_data = self.get_campaign_employee_products(campaign)
+            graph_categories = self.get_graph_categories_data(campaign)
+            employee_group_selections = self.get_graph_employee_group_selections(
+                campaign
+            )
+            employees_choosing = self.get_graph_employee_choosing(campaign)
+            choosing_by_day_time = self.get_choosing_by_day_time(campaign)
+            xlsx_http_response = get_xlsx_http_campaign_response(
+                title='campaign selection',
+                main_data=main_data,
+                group_summaries_products=list(group_summaries_products),
+                organization=campaign.organization.name,
+                graph_categories=graph_categories,
+                employee_group_selections=employee_group_selections,
+                employees_choosing=employees_choosing,
+                choosing_by_day_time=choosing_by_day_time,
+            )
+            return xlsx_http_response
+
+        elif export_type == 'product':
+            money_products, physical_products = self.get_campaign_products(campaign)
+            xlsx_http_response = get_xlsx_http_products_response(
+                title='Campaign products',
+                physical_products=physical_products,
+                money_products=money_products,
+            )
+            return xlsx_http_response
+
+        send_invitation_type = request.GET.get('sendInvitationType')
+        raw_ids = request.GET.get('campaignEmployees', '').split(',')
+        campaign_employees = []
+        for item in raw_ids:
+            try:
+                campaign_employees.append(int(item))
+            except ValueError:
+                pass
+
+        campaign_employees = [
+            item for item in campaign_employees if isinstance(item, int)
+        ]
+        send_invitation_campaign_employees = list(map(int, campaign_employees))
+
+        campaign_employees = CampaignEmployee.objects.filter(
+            campaign_id=object_id
+        ).first()
+        if not campaign_employees:
+            context = {
+                **self.admin_site.each_context(request),
+                'opts': self.opts,
+                'object_id': object_id,
+                'title': 'Campaign Status',
+                'subtitle': campaign.name,
+                'status': None,
+                'employee_groups': (
+                    campaign.employeegroupcampaign_set.select_related(
+                        'employee_group'
+                    ).values('id', employee_group_name=F('employee_group__name'))
+                ),
+                'campaign_active': campaign.status
+                == Campaign.CampaignStatusEnum.ACTIVE.name,
+                'campaign_code': campaign.code,
+            }
+            return TemplateResponse(request, 'campaign/status_form.html', context)
+
+        raw_status = (
+            CampaignEmployee.objects.filter(campaign_id=object_id)
+            .select_related('employee', 'employee__employee_group', 'order')
+            .annotate(
+                group_budget=Subquery(
+                    EmployeeGroupCampaign.objects.filter(
+                        employee_group=OuterRef('employee__employee_group'),
+                        campaign=campaign,
+                    ).values('budget_per_employee')
+                ),
+                total_budget_decimal=Cast(
+                    'total_budget',
+                    output_field=DecimalField(max_digits=10, decimal_places=2),
+                ),
+                employee_used_budget=Coalesce(
+                    Subquery(
+                        Order.objects.filter(
+                            campaign_employee_id=OuterRef('pk'),
+                            status__in=[
+                                Order.OrderStatusEnum.PENDING.name,
+                                Order.OrderStatusEnum.SENT_TO_LOGISTIC_CENTER.name,
+                            ],
+                        )
+                        .values('campaign_employee_id')
+                        .annotate(total_cost=Sum('cost_from_budget'))
+                        .values('total_cost'),
+                        output_field=DecimalField(max_digits=10, decimal_places=2),
+                    ),
+                    Value(
+                        0, output_field=DecimalField(max_digits=10, decimal_places=2)
+                    ),
+                ),
+                employee_left_budget=ExpressionWrapper(
+                    F('total_budget_decimal') - F('employee_used_budget'),
+                    output_field=DecimalField(max_digits=10, decimal_places=2),
+                ),
+                pending_order=FilteredRelation(
+                    'order',
+                    condition=Q(
+                        order__status__in=[
+                            Order.OrderStatusEnum.PENDING.name,
+                            Order.OrderStatusEnum.SENT_TO_LOGISTIC_CENTER.name,
+                        ]
+                    ),
+                ),
+                link=Case(
+                    When(
+                        employee__login_type=EmployeeAuthEnum.SMS.name,
+                        then=Concat(
+                            Value(settings.EMPLOYEE_SITE_BASE_URL),
+                            Value('/'),
+                            Value(campaign.code),
+                            Value('/'),
+                            Value('p'),
+                        ),
+                    ),
+                    When(
+                        employee__login_type=EmployeeAuthEnum.AUTH_ID.name,
+                        then=Concat(
+                            Value(settings.EMPLOYEE_SITE_BASE_URL),
+                            Value('/'),
+                            Value(campaign.code),
+                            Value('/'),
+                            Value('a'),
+                        ),
+                    ),
+                    default=Concat(
+                        Value(settings.EMPLOYEE_SITE_BASE_URL),
+                        Value('/'),
+                        Value(campaign.code),
+                        Value('/'),
+                        Value('e'),
+                    ),
+                ),
+            )
+            .values(
+                link=F('link'),
+                emp_id=F('employee_id'),
+                employee_group_id=F('employee__employee_group__id'),
+                campaign_employee_id=F('pk'),
+                campaign_employee_last_login=F('last_login'),
+                group_budget=F('group_budget'),
+                employee_total_budget=F('total_budget_decimal'),
+                employee_used_budget=F('employee_used_budget'),
+                left_budget=F('employee_left_budget'),
+                employee_group_name=F('employee__employee_group__name'),
+                employee_first_name=F('employee__first_name'),
+                employee_last_name=F('employee__last_name'),
+                order_id=StringAgg(
+                    Cast('pending_order__pk', output_field=CharField()), Value(', ')
+                ),
+                ordered_products=StringAgg(
+                    F('pending_order__orderproduct__product_id__product_id__name'),
+                    Value(', '),
+                ),
+                order_date_time=StringAgg(
+                    Cast('pending_order__order_date_time', output_field=CharField()),
+                    Value(', '),
+                ),
+            )
+            .order_by('order_id', 'emp_id')
+        )
+
+        if send_invitation_type and send_invitation_campaign_employees:
+            send_invitation_employees = list(
+                CampaignEmployee.objects.filter(
+                    id__in=send_invitation_campaign_employees
+                ).values_list('employee__id', flat=True)
+            )
+            send_campaign_employee_invitation.apply_async(
+                (object_id, send_invitation_employees, send_invitation_type)
+            )
+            self.message_user(
+                request, 'Invitation sending process has started', messages.SUCCESS
+            )
 
         context = {
             **self.admin_site.each_context(request),
@@ -889,13 +1626,20 @@ class CampaignAdmin(admin.ModelAdmin, CampaignActionsMixin):
             'object_id': object_id,
             'title': 'Campaign Status',
             'subtitle': campaign.name,
-            'status': status,
+            'status': list(raw_status),
             'employee_groups': campaign.employeegroupcampaign_set.select_related(
                 'employee_group'
             ).values('id', employee_group_name=F('employee_group__name')),
             'campaign_active': campaign.status
             == Campaign.CampaignStatusEnum.ACTIVE.name,
             'campaign_code': campaign.code,
+            'sms_sender_name': campaign.sms_sender_name,
+            'sms_welcome_text': fill_message_template_sms(
+                employee=campaign_employees.employee, campaign=campaign
+            ),
+            'email_welcome_text': fill_message_template_email(
+                employee=campaign_employees.employee, campaign=campaign
+            ),
         }
         return TemplateResponse(request, 'campaign/status_form.html', context)
 
@@ -913,6 +1657,7 @@ class OrderProductInline(admin.TabularInline):
     model = OrderProduct
     formset = OrderProductInlineFormset
     extra = 0
+    form = OrderProductInlineForm
 
 
 class CampaignFilter(admin.SimpleListFilter):
@@ -947,6 +1692,33 @@ class OrganizationFilter(admin.SimpleListFilter):
         return queryset
 
 
+class OrderProductFilter(admin.SimpleListFilter):
+    title = 'Product ID'
+    parameter_name = 'product_id'
+
+    def lookups(self, request, model_admin):
+        items = [
+            (product_id, product_id)
+            for product_id in OrderProduct.objects.values_list(
+                'product_id__product_id', flat=True
+            )
+        ]
+        filter_data = []
+        for item in items:
+            if item not in filter_data:
+                filter_data.append(item)
+        return filter_data
+
+    def queryset(self, request, queryset):
+        if self.value():
+            return queryset.filter(
+                pk__in=OrderProduct.objects.filter(
+                    product_id__product_id__in=str(self.value()).split(','),
+                ).values('order_id')
+            )
+        return queryset
+
+
 @admin.register(Order)
 class OrderAdmin(admin.ModelAdmin, OrderActionsMixin):
     change_list_template = 'campaign/order_change_list.html'
@@ -957,14 +1729,17 @@ class OrderAdmin(admin.ModelAdmin, OrderActionsMixin):
         'organization',
         'order_date_time',
         'status',
+        'po_status',
         'employee_name',
         'employee_group',
         'phone_number',
         'additional_phone_number',
         'ordered_product_names',
         'ordered_product_types',
+        'ordered_product_kinds',
         'user_address',
         'dc_status',
+        'po_number',
     )
     list_filter = (
         CampaignFilter,
@@ -978,6 +1753,10 @@ class OrderAdmin(admin.ModelAdmin, OrderActionsMixin):
             custom_titled_filter('campaign status'),
         ),
         (
+            'campaign_employee_id__campaign__tags__name',
+            custom_titled_filter('campaign tag'),
+        ),
+        (
             'campaign_employee_id__employee__employee_group__delivery_location',
             custom_titled_filter('delivery type'),
         ),
@@ -985,12 +1764,29 @@ class OrderAdmin(admin.ModelAdmin, OrderActionsMixin):
             'orderproduct__product_id__product_id__supplier__name',
             custom_titled_filter('supplier'),
         ),
+        OrderProductFilter,
     )
     search_fields = (
         'reference',
         'order_id',
         'orderproduct__product_id__product_id__name_en',
         'orderproduct__product_id__product_id__name_he',
+        'orderproduct__product_id__product_id__product_type',
+        'orderproduct__product_id__product_id__product_kind',
+        'campaign_employee_id__campaign__name_en',
+        'campaign_employee_id__campaign__name_he',
+        'campaign_employee_id__campaign__organization__name_en',
+        'campaign_employee_id__campaign__organization__name_he',
+        'order_date_time',
+        'status',
+        'campaign_employee_id__employee__first_name_en',
+        'campaign_employee_id__employee__first_name_he',
+        'campaign_employee_id__employee__last_name_en',
+        'campaign_employee_id__employee__last_name_he',
+        'campaign_employee_id__employee__employee_group__name',
+        'phone_number',
+        'additional_phone_number',
+        'logistics_center_status',
     )
 
     fieldsets = [
@@ -1033,10 +1829,7 @@ class OrderAdmin(admin.ModelAdmin, OrderActionsMixin):
         # only allow changing ordered products for saved orders
         return [OrderProductInline] if obj else []
 
-    actions = [
-        'export_as_xlsx',
-        'send_orders',
-    ]
+    actions = ['export_as_xlsx', 'send_orders', 'complete']
 
     def user_address(self, obj):
         return format_with_none_replacement(
@@ -1060,9 +1853,37 @@ class OrderAdmin(admin.ModelAdmin, OrderActionsMixin):
         # order_id is annotated by the custom model manager
         return obj.order_id
 
+    def po_number(self, obj):
+        html_content = format_html(
+            ','.join(
+                [
+                    f'<a href="/admin/logistics/poorder/{purchase_order_id}/change/" target="_blank">{purchase_order_id}</a>'  # noqa: E501
+                    for purchase_order_id in PurchaseOrderProduct.objects.filter(
+                        product_id__in=obj.orderproduct_set.values_list(
+                            'product_id__product_id', flat=True
+                        )
+                    ).values_list('purchase_order__id', flat=True)
+                ]
+            )
+        )
+        if not html_content:
+            html_content = 'No PO Numbers'
+        return html_content
+
+    def po_status(self, obj):
+        return ','.join(
+            list(
+                OrderProduct.objects.filter(order_id=obj).values_list(
+                    'po_status', flat=True
+                )
+            )
+        )
+
     employee_group.short_description = 'Employee Group'
     user_address.short_description = 'User Address'
     dc_status.short_description = 'DC Status'
+    po_number.short_description = 'PO Number'
+    po_status.short_description = 'PO Status'
 
 
 @admin.register(OrganizationProduct)
@@ -1076,6 +1897,53 @@ class OrganizationProductAdmin(admin.ModelAdmin):
     list_display_links = ('price',)
 
 
+class ClientStatusListFilter(admin.SimpleListFilter):
+    title = 'Client Status'
+    parameter_name = 'client_status'
+
+    def lookups(self, request, model_admin):
+        # Define the available filter options
+        return [
+            (QuickOffer.ClientStatusEnum.READY_TO_CHECK.name, 'Ready to Check'),
+            (
+                QuickOffer.ClientStatusEnum.LIST_CHANGED_AFTER_APPROVE.name,
+                'List Changed After Approve',
+            ),
+            (
+                QuickOffer.ClientStatusEnum.CLIENT_ADDED_TO_LIST.name,
+                'Client Added to List',
+            ),
+            ('--', 'No Status'),
+        ]
+
+    def queryset(self, request, queryset):
+        # Filter the queryset based on the selected status
+        if self.value():
+            return queryset.annotate(
+                _client_status=Case(
+                    When(
+                        Q(selected_products__isnull=False) & Q(send_my_list=True),
+                        then=Value(QuickOffer.ClientStatusEnum.READY_TO_CHECK.name),
+                    ),
+                    When(
+                        Q(selected_products__isnull=False) & Q(send_my_list=False),
+                        then=Value(
+                            QuickOffer.ClientStatusEnum.LIST_CHANGED_AFTER_APPROVE.name
+                        ),
+                    ),
+                    When(
+                        selected_products__isnull=False,
+                        then=Value(
+                            QuickOffer.ClientStatusEnum.CLIENT_ADDED_TO_LIST.name
+                        ),
+                    ),
+                    default=Value('--'),
+                    output_field=CharField(),
+                )
+            ).filter(_client_status=self.value())
+        return queryset
+
+
 @admin.register(QuickOffer)
 class QuickOfferAdmin(admin.ModelAdmin, QuickOfferActionsMixin):
     list_display = [
@@ -1086,6 +1954,7 @@ class QuickOfferAdmin(admin.ModelAdmin, QuickOfferActionsMixin):
         'last_login',
         'list_tags',
         'manager_site_link',
+        'impersonate',
     ]
     actions = [
         'finish_selected_quick_offers',
@@ -1094,10 +1963,47 @@ class QuickOfferAdmin(admin.ModelAdmin, QuickOfferActionsMixin):
     list_filter = (
         'organization',
         'nicklas_status',
-        'client_status',
+        ClientStatusListFilter,
         'tags',
         'last_login',
     )
+
+    search_fields = (
+        'name_en',
+        'name_he',
+        'nicklas_status',
+        'last_login',
+    )
+
+    def get_queryset(self, request):
+        qs = super().get_queryset(request)
+
+        # Annotate the queryset with calculated client_status
+        qs = qs.annotate(
+            _client_status=Case(
+                When(
+                    Q(selected_products__isnull=False) & Q(send_my_list=True),
+                    then=Value(QuickOffer.ClientStatusEnum.READY_TO_CHECK.name),
+                ),
+                When(
+                    Q(selected_products__isnull=False) & Q(send_my_list=False),
+                    then=Value(
+                        QuickOffer.ClientStatusEnum.LIST_CHANGED_AFTER_APPROVE.name
+                    ),
+                ),
+                When(
+                    selected_products__isnull=False,
+                    then=Value(QuickOffer.ClientStatusEnum.CLIENT_ADDED_TO_LIST.name),
+                ),
+                default=Value('--'),
+                output_field=CharField(),
+            )
+        ).distinct()
+
+        return qs
+
+    def client_status(self, obj: QuickOffer):
+        return obj.client_status
 
     def quick_offer(self, obj):
         return mark_safe(
@@ -1122,6 +2028,18 @@ class QuickOfferAdmin(admin.ModelAdmin, QuickOfferActionsMixin):
     def list_tags(self, obj):
         return ', '.join([tag.name for tag in obj.tags.all()])
 
+    def impersonate(self, obj):
+        impersonate_url = reverse('admin:campaign_impersonate_view', args=[obj.id])
+        if obj.status == QuickOffer.StatusEnum.ACTIVE.name:
+            impersonate_button = f"""
+            <input type="submit" value="Impersonate" 
+            onclick="window.open('{impersonate_url}','_blank')">
+            """
+        else:
+            impersonate_button = ''
+        return format_html(impersonate_button)
+
+    impersonate.short_description = 'Impersonate'
     list_tags.short_description = 'Tags'
 
     def get_urls(self):
@@ -1132,7 +2050,12 @@ class QuickOfferAdmin(admin.ModelAdmin, QuickOfferActionsMixin):
                 'add/',
                 self.admin_site.admin_view(QuickOfferCreationWizard.as_view()),
                 name=f'{app_label}_{model_name}_add',
-            )
+            ),
+            path(
+                '<int:quick_offer_id>/quick_offer_impersonate',
+                QuickOfferImpersonateView.as_view(),
+                name='campaign_impersonate_view',
+            ),
         ] + super().get_urls()
 
     class Media:

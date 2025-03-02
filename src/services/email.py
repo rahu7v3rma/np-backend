@@ -66,6 +66,7 @@ def send_mail(
         )
 
     try:
+        print(msg.__dict__)
         msg.send(fail_silently=fail_silently)
         return True
     except Exception as error:

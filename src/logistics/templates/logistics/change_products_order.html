@@ -8,7 +8,23 @@
 <script>
   window.addEventListener('load', function (){
       let _products = [];
+      let quantity_arrived;
+      let status;
+
       {% for prod in product_instance.products.all %}
+            // keeping calculation result to prevent executing multiple db
+            // queries
+            quantity_arrived = {{ prod.quantity_arrived }};
+
+            status;
+            if (quantity_arrived === 0) {
+              status = "{{ product_instance.status }}";
+            } else if (quantity_arrived < {{ prod.quantity_ordered }}) {
+              status = "PARTIALLY COMPLETE";
+            } else {
+              status = "COMPLETE";
+            }
+
             _products.push({
                 "prod_id": "{{ prod.product_id.id }}",
                 "prod_image": "{{ prod.product_id.main_image_link }}",
@@ -16,13 +32,28 @@
                 "category": "{{ prod.product_id.categories.all.first.name }}",
                 "brand": "{{ prod.product_id.brand.name }}",
                 "quantity_ordered": {{ prod.quantity_ordered }},
-                "quantity_received": 0,
+                "quantity_received": quantity_arrived,
                 "sku": "{{ prod.product_id.sku }}",
                 "barcode": "{{ prod.product_id.reference }}",
-                "cost_price": {{ prod.product_id.cost_price }},
-                "status": "{{ product_instance.status }}",
+                "cost_price": "{{ prod.product_id.cost_price }}",
+                "status": status
             })
       {% endfor %}
+
+      const TAX_PERCENT = {{ tax_percent }};;  // Django variable
+
+      // Function to remove tax from price
+      function excludeTaxes(value) {
+        if (!value || isNaN(value)) return 0.0;  // Ensure value is valid
+        return Math.round(value * (1 - TAX_PERCENT / 100) * 100) / 100;
+      }
+
+      // Loop through _products array and apply tax exclusion
+      _products = _products.map(prod => {
+        prod.cost_price = excludeTaxes(parseFloat(prod.cost_price));
+        return prod;
+      });
+
       updateViewOrder(_products, '{{ product_instance.supplier }}', '{{ product_instance.id }}');
       updateViewSubtotal(_products);
       let elements = document.getElementById("content").getElementsByTagName("h2");

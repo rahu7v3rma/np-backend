@@ -72,6 +72,7 @@ class ProductSerializer(ModelSerializer):
     calculated_price = IntegerField(read_only=True)
     main_image_link = CharField()
     category = SerializerMethodField()
+    tax_percent = IntegerField(read_only=True)
 
     class Meta:
         model = Product
@@ -83,6 +84,7 @@ class ProductSerializer(ModelSerializer):
             'brand',
             'sku',
             'reference',
+            'product_kind',
             'cost_price',
             'total_cost',
             'google_price',
@@ -90,6 +92,11 @@ class ProductSerializer(ModelSerializer):
             'calculated_price',
             'main_image_link',
             'remaining_quantity',
+            'client_discount_rate',
+            'ordered_quantity',
+            'voucher_type',
+            'tax_percent',
+            'supplier_discount_rate',
         ]
 
     def get_category(self, obj: Product):
@@ -115,8 +122,14 @@ class ProductGetSerializer(Serializer):
     supplier_id = IntegerField(required=False)
     category_id = IntegerField(required=False)
     tag_id = IntegerField(required=False)
+    campaign_id = IntegerField(required=False)
+    employee_group_id = IntegerField(required=False)
+    quick_offer_id = IntegerField(required=False)
+    product_kind = CharField(required=False)
     query = CharField(required=False)
     product_ids = ListField(child=IntegerField(), required=False)
+    google_price_min = IntegerField(required=False, allow_null=True)
+    google_price_max = IntegerField(required=False, allow_null=True)
 
 
 class GetSupplierSerializer(ModelSerializer):
@@ -127,3 +140,9 @@ class GetSupplierSerializer(ModelSerializer):
 
 class ProductSkuSearchSerializer(Serializer):
     q = CharField(max_length=255)
+
+
+class TagsSerializer(ModelSerializer):
+    class Meta:
+        model = Tag
+        fields = ('id', 'name')

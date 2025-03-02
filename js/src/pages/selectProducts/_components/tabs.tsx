@@ -8,10 +8,12 @@ type Props = {
 };
 
 interface Tab {
+  id: number;
   label: string;
   key: number;
   idx: number;
   budget: number;
+  default_discount: string;
 }
 
 const Tab = ({ tabs, organizationId }: Props) => {
@@ -54,6 +56,8 @@ const Tab = ({ tabs, organizationId }: Props) => {
             formId={tab.idx}
             organizationId={organizationId}
             budget={tab.budget}
+            default_discount={tab.default_discount}
+            allTabs={tabs}
           />
         </div>
       ))}

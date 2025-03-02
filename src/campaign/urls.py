@@ -1,7 +1,7 @@
 from django.urls import path
 
 from . import views
-from .admin_views import CampaignEmployeeAutocompleteView
+from .admin_views import CampaignEmployeeAutocompleteView, update_employee_budget
 
 
 urlpatterns = [
@@ -9,11 +9,6 @@ urlpatterns = [
         '<str:campaign_code>/details',
         views.CampaignView.as_view(),
         name='compaign_details',
-    ),
-    path(
-        '<str:campaign_code>/campaign-products',
-        views.CampaignProductsAdminView.as_view(),
-        name='campaign_products',
     ),
     path(
         '<str:campaign_code>/employee-selection',
@@ -91,6 +86,11 @@ urlpatterns = [
         name='campaign_impersonation_token_exchange_view',
     ),
     path(
+        '<str:quick_offer_code>/quick_offer_exchange',
+        views.QuickOfferImpersonationTokenExhcangeView.as_view(),
+        name='quick_offer_impersonation_token_exchange_view',
+    ),
+    path(
         '<str:campaign_code>/cart/products/',
         views.GetCartProductsView.as_view(),
         name='get_cart_products',
@@ -99,6 +99,11 @@ urlpatterns = [
         'campaign-employee-autocomplete',
         CampaignEmployeeAutocompleteView.as_view(),
         name='campaign-employee-autocomplete',
+    ),
+    path(
+        '<str:campaign_code>/filter_lookup',
+        views.FilterLookupView.as_view(),
+        name='filter_lookup',
     ),
     path(
         'quick-offer/<str:quick_offer_code>',
@@ -151,13 +156,23 @@ urlpatterns = [
         name='campaign_product',
     ),
     path(
-        'quick-offer-order',
-        views.QuickOfferOrderView.as_view(),
-        name='quick_offer_order',
+        'organization/<int:organization_id>',
+        views.OrganizationView.as_view(),
+        name='organization_view',
     ),
     path(
-        'quick-offer-cancel-order/<str:order_id>',
-        views.QuickOfferCancelOrderView.as_view(),
-        name='quick_offer_cancel_order',
+        'send_my_list/',
+        views.UpdateOrganizationQuickOfferView.as_view(),
+        name='update send my list',
+    ),
+    path(
+        'organization-product',
+        views.OrganizationProductView.as_view(),
+        name='organization_product',
+    ),
+    path(
+        'update-employee-budget/<int:employee_id>/',
+        update_employee_budget,
+        name='update_employee_budget',
     ),
 ]

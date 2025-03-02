@@ -1,6 +1,8 @@
 from io import BytesIO
 
+from django.conf import settings
 from django.contrib import messages
+from django.db.models import Q
 from django.http import HttpResponse
 from django.utils.translation import ngettext
 from openpyxl import Workbook
@@ -10,6 +12,7 @@ from campaign.serializers import (
     ProductSerializerQuickOfferAdmin,
 )
 from inventory.models import Product
+from logistics.models import PurchaseOrder, PurchaseOrderProduct
 from logistics.tasks import send_order_to_logistics_center
 
 from .models import (
@@ -18,6 +21,7 @@ from .models import (
     Employee,
     EmployeeGroupCampaign,
     Order,
+    OrderProduct,
 )
 from .tasks import (
     export_orders_as_xlsx as export_orders_as_xlsx_task,
@@ -28,7 +32,7 @@ from .tasks import (
 class CampaignActionsMixin:
     def activate_campaign(self, request, queryset):
         # only pending campaigns should be activated
-        pending_campaigns = queryset.filter(status='PENDING').all()
+        pending_campaigns = queryset.filter(status__in=['PENDING', 'FINISHED']).all()
 
         for campaign in pending_campaigns:
             if request.POST.get('send_email') == '1':
@@ -170,6 +174,18 @@ class OrderActionsMixin:
                     'sent to the logistics center'
                 )
 
+            for p in order.ordered_products():
+                if p['sku'] and len(p['sku']) > 22:
+                    errors.append(
+                        f'order {order.reference} has product {p["name"]} '
+                        'with sku value which is too long'
+                    )
+                if p['reference'] and len(p['reference']) > 22:
+                    errors.append(
+                        f'order {order.reference} has product {p["name"]} '
+                        'with reference value which is too long'
+                    )
+
         if len(errors) > 0:
             errors_str = ', '.join(errors)
 
@@ -181,7 +197,12 @@ class OrderActionsMixin:
             return
 
         for order in queryset.all():
-            send_order_to_logistics_center.apply_async((order.pk,))
+            # we only have one active logistics provider (=center) at the
+            # moment, but in the future some stock and orders may be managed by
+            # one while others by another according to some logic
+            send_order_to_logistics_center.apply_async(
+                (order.pk, settings.ACTIVE_LOGISTICS_CENTER)
+            )
             scheduled_count += 1
 
         self.message_user(
@@ -195,10 +216,46 @@ class OrderActionsMixin:
             messages.SUCCESS,
         )
 
+    def complete(self, request, queryset):
+        OrderProduct.objects.filter(order_id__in=queryset).filter(
+            Q(
+                product_id__product_id__in=PurchaseOrderProduct.objects.filter(
+                    purchase_order__status=PurchaseOrder.Status.SENT_TO_SUPPLIER.name,
+                ).values_list('product_id', flat=True)
+            )
+            | Q(product_id__product_id__product_kind=Product.ProductKindEnum.MONEY.name)
+        ).update(po_status=OrderProduct.POStatus.COMPLETE.name)
+
+        orders_count = queryset.count()
+
+        self.message_user(
+            request,
+            ngettext(
+                '%d order are successfully marked as complete.',
+                '%d orders are successfully marked as complete.',
+                orders_count,
+            )
+            % orders_count,
+            messages.SUCCESS,
+        )
+
 
 class QuickOfferActionsMixin:
     def finish_selected_quick_offers(self, request, queryset):
-        pass
+        if not queryset:
+            return
+
+        updated = queryset.filter(status='ACTIVE').update(status='FINISHED')
+        self.message_user(
+            request,
+            ngettext(
+                '%d quick offer was successfully marked as finished.',
+                '%d quick offers were successfully marked as finished.',
+                updated,
+            )
+            % updated,
+            messages.SUCCESS,
+        )
 
     def export_selected_quick_offers_as_xlsx(self, request, queryset):
         if not queryset:

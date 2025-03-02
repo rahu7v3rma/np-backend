@@ -10,9 +10,9 @@
   window.addEventListener('load', function (){
       let _products = [];
       {% for prod in product_instance.products.all %}
-            _products.push([{{ prod.product_id.id }}, {{ prod.quantity_ordered }}])
+            _products.push([{{ prod.product_id.id }}, {{ prod.quantity_ordered }}, {{ prod.id }}])
       {% endfor %}
-      suppliersOrder('{{ product_instance.supplier.name }}', _products, '{{ product_instance.notes }}', '{{ product_instance.id }}', '{{ product_instance.status }}');
+      suppliersOrder('{{ product_instance.supplier.name }}', _products, '{{ product_instance.notes }}', '{{ product_instance.id }}', '{{ product_instance.status }}', '{{ variations }}');
       let elements = document.getElementById("content").getElementsByTagName("h2");
       if (elements) elements[0].style.display = "none";
   }, false);
@@ -60,6 +60,9 @@
                     <th scope="col" class="text-center py-3 bg-white">Sku</th>
                     <th scope="col" class="text-center py-3 bg-white">Barcode</th>
                     <th scope="col" class="px-6 py-3 bg-white">Products</th>
+                    <th scope="col" class="text-center py-3 bg-white">Product Type</th>
+                    <th scope="col" class="text-center py-3 bg-white" id="voucherValueHeader" style="display: none;">Voucher Value</th>
+                    <th scope="col" class="text-center py-3 bg-white" id="supplierDiscountHeader" style="display: none;">Supplier Discount Rate</th>
                     <th scope="col" class="text-center py-3 bg-white">Cost</th>
                     <th scope="col" class="text-center py-3 bg-white">Quantity</th>
                     <th scope="col" class="text-center py-3 bg-white">Total Price</th>

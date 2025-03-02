@@ -50,6 +50,7 @@ env = environ.Env(
     JWT_SECRET_KEY=(str, None),
     JWT_ALGORITHM=(str, None),
     JWT_EXPIRY_DAYS=(int, 7),
+    DATA_UPLOAD_MAX_NUMBER_FIELDS=(int, 1000),
     GROW_BASE_URL=(str, None),
     GROW_PAGE_CODE=(str, None),
     GROW_USER_ID=(str, None),
@@ -81,10 +82,16 @@ env = environ.Env(
     ORIAN_SFTP_USER=(str, None),
     ORIAN_SFTP_PASSWORD=(str, None),
     ORIAN_SFTP_SNAPSHOTS_DIR=(str, None),
+    PAP_INBOUND_URL=(str, None),
+    PAP_OUTBOUND_URL=(str, None),
+    PAP_CONSIGNEE=(str, None),
+    PAP_ID_PREFIX=(str, ''),
+    PAP_MESSAGE_TIMEZONE_NAME=(str, None),
     CC_RECIPIENT_EMAILS=(list, []),
     REPLY_TO_ADDRESSES_EMAILS=(list, []),
     STOCK_LIMIT_THRESHOLD=(int, None),
-    TAX_AMOUNT=(int, 0),
+    TAX_PERCENT=(int, 0),
+    LOGISTICS_PROVIDER_AUTHENTICATION_KEYS=(dict, {}),
 )
 
 # read environ variables from .env file
@@ -142,6 +149,8 @@ INSTALLED_APPS = [
     'payment',
     'export',
     'logistics',
+    'nested_inline',
+    'django_admin_inline_paginator',
 ]
 
 MIDDLEWARE = [
@@ -255,7 +264,7 @@ AUTH_PASSWORD_VALIDATORS = [
 
 LANGUAGE_CODE = 'en-us'
 
-TIME_ZONE = 'UTC'
+TIME_ZONE = 'Asia/Jerusalem'
 
 USE_I18N = True
 
@@ -434,6 +443,7 @@ CELERY_TASK_EAGER_PROPAGATES = True
 CELERY_ACCEPT_CONTENT = ['json', 'pickle']
 
 DATA_UPLOAD_MAX_NUMBER_FILES = 300
+DATA_UPLOAD_MAX_NUMBER_FIELDS = env('DATA_UPLOAD_MAX_NUMBER_FIELDS')
 
 # orian logistics center api settings
 ORIAN_BASE_URL = env('ORIAN_BASE_URL')
@@ -468,6 +478,19 @@ else:
     ORIAN_SFTP_PASSWORD = PREFIXED_ORIAN_SFTP_PASSWORD
 ORIAN_SFTP_SNAPSHOTS_DIR = env('ORIAN_SFTP_SNAPSHOTS_DIR')
 
+PAP_INBOUND_URL = env('PAP_INBOUND_URL')
+PAP_OUTBOUND_URL = env('PAP_OUTBOUND_URL')
+PAP_CONSIGNEE = env('PAP_CONSIGNEE')
+PAP_ID_PREFIX = env('PAP_ID_PREFIX')
+PAP_MESSAGE_TIMEZONE_NAME = env('PAP_MESSAGE_TIMEZONE_NAME')
+
+# we currently have only one active logistics center and it is set here so that
+# we know which one to use when sending out orders and purchase orders. in the
+# future we may support multiple active centers, in which case suppliers or
+# products will direct us which center should be used. the value here must
+# match the value of one of the LogisticsCenterEnum options
+ACTIVE_LOGISTICS_CENTER = 'Pick and Pack'
+
 CC_RECIPIENT_EMAILS = env('CC_RECIPIENT_EMAILS')
 REPLY_TO_ADDRESSES_EMAILS = env('REPLY_TO_ADDRESSES_EMAILS')
 
@@ -475,4 +498,10 @@ REPLY_TO_ADDRESSES_EMAILS = env('REPLY_TO_ADDRESSES_EMAILS')
 # an alert should be triggered.
 STOCK_LIMIT_THRESHOLD = env('STOCK_LIMIT_THRESHOLD') or 0
 
-TAX_AMOUNT = env('TAX_AMOUNT') or 0
+try:
+    TAX_PERCENT = int(env('TAX_PERCENT')) or 0
+    TAX_PERCENT = TAX_PERCENT if 100 >= TAX_PERCENT >= 0 else 0
+except ValueError:
+    TAX_PERCENT = 0
+
+LOGISTICS_PROVIDER_AUTHENTICATION_KEYS = env('LOGISTICS_PROVIDER_AUTHENTICATION_KEYS')

@@ -1,0 +1,54 @@
+{% extends "admin/change_form.html" %}
+{% block content %}
+    {{ block.super }}
+{% endblock %}
+{% block admin_change_form_document_ready %}
+    {{ block.super }}
+    <script src="https://code.jquery.com/jquery-3.7.1.min.js" integrity="sha256-/JqT3SQfawRcv/BIHPThkBvs0OEvtFFmqPF/lYI/Cxo=" crossorigin="anonymous"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/rivets/0.9.6/rivets.bundled.min.js"></script>
+    <link href="https://cdn.jsdelivr.net/npm/select2@4.1.0-rc.0/dist/css/select2.min.css" rel="stylesheet" />
+    <script src="https://cdn.jsdelivr.net/npm/select2@4.1.0-rc.0/dist/js/select2.min.js"></script>
+    <script>
+        const handleVariations = () => {
+
+            const handleVariationKindChange = (value) => {
+                if(value === 'TEXT') {
+                    $('#Variation_color_variation-group').hide();
+                    $('#Variation_text_variation-group').show();
+                } else if (value === 'COLOR'){
+                    $('#Variation_color_variation-group').show();
+                    $('#Variation_text_variation-group').hide();
+                }
+            }
+            $('#id_variation_kind').change(e => handleVariationKindChange(e.target.value));
+            $('#Variation_text_variation-group').hide();
+            $('#Variation_color_variation-group').hide();
+
+            handleVariationKindChange($('#id_variation_kind').val());
+            function updateDropdowns() {
+                let selectedValues = [];
+
+                $('select[name$="-color"], select[name$="-text"]').each(function() {
+                    var value = $(this).val();
+                    if (value) selectedValues.push(value);
+                });
+
+                $('select[name$="-color"], select[name$="-text"]').each(function() {
+                    var currentValue = $(this).val();
+
+                    $(this).find('option').each(function() {
+                        if (this.value && this.value !== currentValue) {
+                            $(this).toggle(!selectedValues.includes(this.value));
+                        }
+                    });
+                });
+            }
+            updateDropdowns();
+            $(document).on('change', 'select[name$="-color"], select[name$="-text"]', updateDropdowns);
+            $(document).on('formset:added', function() {
+                updateDropdowns();
+            });
+        };
+        handleVariations();
+    </script>
+{% endblock %}

@@ -1,11 +1,12 @@
 from enum import Enum
 import uuid
 
-from django.core.validators import validate_email
+from django.core.validators import MaxLengthValidator, MaxValueValidator, validate_email
 from django.db import models
 from django.db.models.functions import Cast, Round
+from django.utils.translation import gettext_lazy as _
 
-from campaign.models import OrderProduct, QuickOfferOrderProduct
+from campaign.models import Order, OrderProduct
 from common.managers import ActiveObjectsManager
 from common.models import BaseModelMixin
 from lib.phone_utils import convert_phone_number_to_long_form, validate_phone_number
@@ -18,11 +19,12 @@ class Product(models.Model):
         PHYSICAL = 'physical'
         MONEY = 'money'
         BUNDLE = 'bundle'
+        VARIATION = 'variation'
 
     class ProductTypeEnum(Enum):
-        REGULAR = 'Regular'
-        LARGE_PRODUCT = 'Large product'
-        SENT_BY_SUPPLIER = 'Sent by supplier'
+        REGULAR = _('Regular')
+        LARGE_PRODUCT = _('Large product')
+        SENT_BY_SUPPLIER = _('Sent by supplier')
 
     class OfferTypeEnum(Enum):
         SPECIAL_OFFER = 'Special Offer'
@@ -31,13 +33,20 @@ class Product(models.Model):
         JUST_LANDED = 'Just Landed'
         STAFF_PICK = 'Staff Pick'
 
+    class VoucherTypeEnum(Enum):
+        PHYSICAL = 'physical'
+        DIGITAL = 'digital'
+
     brand = models.ForeignKey(
         'Brand', on_delete=models.CASCADE, related_name='brand_products'
     )
     supplier = models.ForeignKey(
         'Supplier', on_delete=models.CASCADE, related_name='supplier_products'
     )
-    reference = models.CharField(max_length=100, null=True, blank=True)
+    # add max length as a validator so we don't enforce it on pre-existing products
+    reference = models.CharField(
+        max_length=100, null=True, blank=True, validators=[MaxLengthValidator(22)]
+    )
     sale_price = models.IntegerField(null=True, blank=True)
     name = models.CharField(max_length=100)
     product_kind = models.CharField(
@@ -54,7 +63,10 @@ class Product(models.Model):
     )
     product_quantity = models.IntegerField(default=2147483647, null=False, blank=False)
     description = models.TextField()
-    sku = models.CharField(max_length=255, unique=True)
+    # add max length as a validator so we don't enforce it on pre-existing products
+    sku = models.CharField(
+        max_length=255, unique=True, validators=[MaxLengthValidator(22)]
+    )
     link = models.TextField(null=True, blank=True)
     active = models.BooleanField(default=True)
     cost_price = models.IntegerField()
@@ -87,10 +99,6 @@ class Product(models.Model):
                 models.When(
                     models.Q(
                         delivery_price__isnull=False,
-                        product_type__in=(
-                            ProductTypeEnum.LARGE_PRODUCT.name,
-                            ProductTypeEnum.SENT_BY_SUPPLIER.name,
-                        ),
                     ),
                     then=Cast('delivery_price', output_field=models.FloatField()),
                 ),
@@ -119,12 +127,35 @@ class Product(models.Model):
     )
 
     bundled_products = models.ManyToManyField('Product', through='ProductBundleItem')
+    variations = models.ManyToManyField(
+        'Variation', through='ProductVariation', related_name='products'
+    )
     offer = models.CharField(
         max_length=20,
         choices=[(o.name, o.value) for o in OfferTypeEnum],
         blank=True,
         null=True,
         default=None,
+    )
+    voucher_type = models.CharField(
+        max_length=20,
+        choices=[
+            (voucher_type.name, voucher_type.value) for voucher_type in VoucherTypeEnum
+        ],
+        blank=True,
+        null=True,
+    )
+    client_discount_rate = models.FloatField(
+        blank=True,
+        null=True,
+        validators=[MaxValueValidator(100.0)],
+        help_text='Enter a Client Discount Rate up to 100.0.',
+    )
+    supplier_discount_rate = models.FloatField(
+        blank=True,
+        null=True,
+        validators=[MaxValueValidator(100.0)],
+        help_text='Enter a Supplier Discount Rate up to 100.0.',
     )
 
     def update_bundle_calculated_fields(self):
@@ -176,16 +207,15 @@ class Product(models.Model):
 
     @property
     def ordered_quantity(self):
-        quantity = OrderProduct.objects.filter(product_id__product_id=self).aggregate(
-            models.Sum('quantity')
-        )
-        quick_offer = QuickOfferOrderProduct.objects.filter(product_id=self).aggregate(
-            models.Sum('quantity')
-        )
+        quantity = OrderProduct.objects.filter(
+            product_id__product_id=self,
+            order_id__status__in=[
+                Order.OrderStatusEnum.PENDING.name,
+                Order.OrderStatusEnum.SENT_TO_LOGISTIC_CENTER.name,
+            ],
+        ).aggregate(models.Sum('quantity'))
 
-        quantity = quantity.get('quantity__sum') or 0
-        quick_offer = quick_offer.get('quantity__sum') or 0
-        return quantity + quick_offer
+        return quantity.get('quantity__sum') or 0
 
     @property
     def remaining_quantity(self):
@@ -196,9 +226,17 @@ class Product(models.Model):
 
 
 class Category(models.Model):
-    name = models.CharField(max_length=100)
+    name = models.CharField(max_length=100, unique=True)
     icon_image = RandomNameImageFieldSVG(null=True, blank=True)
-    order = models.PositiveIntegerField(null=True, blank=True, default=0)
+    order = models.IntegerField(
+        null=True,
+        blank=True,
+        default=0,
+        help_text=(
+            'Use positive values normally. Negative values will cause the '
+            'category to be displayed before the "All" category'
+        ),
+    )
 
     class Meta:
         verbose_name_plural = 'Categories'
@@ -213,7 +251,7 @@ class CategoryProduct(models.Model):
 
 
 class Tag(models.Model):
-    name = models.CharField(max_length=100)
+    name = models.CharField(max_length=100, unique=True)
 
     def __str__(self) -> str:
         return self.name
@@ -238,7 +276,7 @@ class ProductBundleItem(models.Model):
 
 
 class Brand(BaseModelMixin):
-    name = models.CharField(max_length=100)
+    name = models.CharField(max_length=100, unique=True)
     logo_image = RandomNameImageField(null=True, blank=True)
     suppliers = models.ManyToManyField('Supplier', through='BrandSupplier')
 
@@ -355,3 +393,87 @@ class Share(models.Model):
         verbose_name = 'Share'
         verbose_name_plural = 'Shares'
         ordering = ['-created_at']
+
+
+class Variation(models.Model):
+    class VariationKindEnum(Enum):
+        TEXT = 'text'
+        COLOR = 'color'
+
+    variation_kind = models.CharField(
+        max_length=10,
+        choices=[(vk.name, vk.value) for vk in VariationKindEnum],
+    )
+    system_name = models.CharField(max_length=255)
+    site_name = models.CharField(max_length=255)
+    color_variation = models.ManyToManyField(
+        'ColorVariation', blank=True, related_name='variations'
+    )
+    text_variation = models.ManyToManyField(
+        'TextVariation', blank=True, related_name='text_variations'
+    )
+
+    def __str__(self):
+        return self.system_name
+
+
+class ColorVariation(models.Model):
+    name = models.CharField(max_length=30)
+    color_code = models.CharField(max_length=10)
+
+    def __str__(self):
+        return self.name
+
+
+class TextVariation(models.Model):
+    text = models.CharField(max_length=255)
+
+    def __str__(self):
+        return self.text
+
+
+class ProductVariation(models.Model):
+    product = models.ForeignKey(Product, on_delete=models.CASCADE)
+    variation = models.ForeignKey(Variation, on_delete=models.CASCADE)
+    is_enabled = models.BooleanField(default=True)
+
+    # class Meta:
+    #     unique_together = ('product', 'variation')
+
+    def __str__(self):
+        return self.variation.system_name
+
+    def save(self, *args, **kwargs):
+        total_existing_count = ProductVariation.objects.filter(
+            product=self.product
+        ).count()
+        if total_existing_count >= 5:
+            raise ValueError(
+                f'Product {self.product.name} can only have up to 5 variations.'
+            )
+        return super().save(*args, **kwargs)
+
+
+class ProductColorVariationImage(models.Model):
+    product_variation = models.ForeignKey(ProductVariation, on_delete=models.CASCADE)
+    product = models.ForeignKey(
+        Product, on_delete=models.CASCADE, related_name='color_variations'
+    )
+    variation = models.ForeignKey(Variation, on_delete=models.CASCADE)
+    color = models.ForeignKey(ColorVariation, on_delete=models.CASCADE)
+    image = RandomNameImageField(null=True, blank=True)
+
+    def __str__(self):
+        return f'{self.id}'
+
+
+class ProductTextVariation(models.Model):
+    product_variation = models.ForeignKey(ProductVariation, on_delete=models.CASCADE)
+    product = models.ForeignKey(
+        Product, on_delete=models.CASCADE, related_name='text_variations'
+    )
+    variation = models.ForeignKey(Variation, on_delete=models.CASCADE)
+    text = models.ForeignKey(TextVariation, on_delete=models.CASCADE)
+
+    def __str__(self):
+        return f'{self.id}'

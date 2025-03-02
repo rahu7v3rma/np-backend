@@ -1,0 +1,8 @@
+<tr class="inline-text">
+    <th colspan="2">Text Variations</th>
+</tr>
+{% for inline_admin_form in inline_admin_formset %}
+<tr>
+    <td colspan="2">{{ inline_admin_form.form }}</td>
+</tr>
+{% endfor %}

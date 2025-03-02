@@ -6,17 +6,16 @@ from django.conf import settings
 from django.core.paginator import Paginator
 from django.db.models import (
     Case,
+    CharField,
     DecimalField,
-    ExpressionWrapper,
     F,
-    IntegerField,
     OuterRef,
     Q,
     Subquery,
-    Sum,
+    Value,
     When,
 )
-from django.db.models.functions import Coalesce
+from django.db.models.functions import Coalesce, Concat
 from django.utils.decorators import method_decorator
 from django.utils.translation import gettext
 from rest_framework import status
@@ -41,8 +40,6 @@ from campaign.models import (
     Organization,
     OrganizationProduct,
     QuickOffer,
-    QuickOfferOrder,
-    QuickOfferOrderProduct,
     QuickOfferSelectedProduct,
 )
 from campaign.serializers import (
@@ -57,27 +54,42 @@ from campaign.serializers import (
     EmployeeOrderRequestSerializer,
     EmployeeSerializer,
     EmployeeWithGroupSerializer,
+    FilterLookupBrandsSerializer,
+    FilterLookupProductKindsSerializer,
+    FilterLookupSerializer,
+    FilterLookupTagsSerializer,
     OrderSerializer,
     OrganizationLoginSerializer,
+    OrganizationProductPutSerializer,
+    OrganizationSerializer,
     ProductSerializerCampaign,
-    ProductSerializerCampaignAdmin,
+    QuickOfferProductRequestSerializer,
     QuickOfferProductSerializer,
     QuickOfferProductsRequestSerializer,
     QuickOfferProductsResponseSerializer,
+    QuickOfferReadOnlySerializer,
     QuickOfferSelectProductsDetailSerializer,
     QuickOfferSelectProductsSerializer,
     QuickOfferSerializer,
+    QuickOfferUpdateSendMyOrderSerializer,
     ShareRequestSerializer,
 )
 from campaign.utils import (
     AdminPreviewAuthentication,
     EmployeeAuthentication,
+    EmployeeOrQuickOfferPermission,
     EmployeePermissions,
     QuickOfferAuthentication,
     QuickOfferPermissions,
-    get_campaign_product_price,
+    filter_campaign_products_with_calculated_price,
+    get_campaign_brands,
+    get_campaign_max_product_price,
+    get_campaign_product_kinds,
+    get_campaign_tags,
     get_employee_admin_preview,
     get_employee_impersonated_by,
+    get_quick_offer_max_product_price,
+    transform_variations,
 )
 from inventory.models import (
     Brand,
@@ -99,10 +111,6 @@ from payment.utils import initiate_payment
 from services.auth import jwt_encode
 from services.email import send_order_confirmation_email, send_otp_token_email
 from services.sms import send_otp_token_sms
-from src.campaign.serializers import (
-    QuickOfferProductRequestSerializer,
-    QuickOfferReadOnlySerializer, QuickOfferOrderRequestSerializer, QuickOfferOrderSerializer,
-)
 
 
 logger = logging.getLogger(__name__)
@@ -175,41 +183,6 @@ class CampaignView(APIView):
         )
 
 
-class CampaignProductsAdminView(APIView):
-    authentication_classes = [SessionAuthentication]
-    permission_classes = [AllowAny]
-
-    @method_decorator(lang_decorator)
-    def get(self, request, campaign_code):
-        campaign: Campaign = Campaign.objects.get(code=campaign_code)
-
-        unique_product_ids = list(
-            EmployeeGroupCampaignProduct.objects.filter(
-                employee_group_campaign_id__campaign=campaign
-            )
-            .values_list('product_id', flat=True)
-            .distinct()
-        )
-
-        product_list = Product.objects.filter(id__in=unique_product_ids)
-
-        serializer = ProductSerializerCampaignAdmin(
-            product_list,
-            many=True,
-            context={'campaign': campaign},
-        )
-
-        return Response(
-            {
-                'success': True,
-                'message': 'Campaign products fetched successfully.',
-                'status': status.HTTP_200_OK,
-                'data': serializer.data,
-            },
-            status=status.HTTP_200_OK,
-        )
-
-
 class CampaignEmployeeSelectionView(APIView):
     authentication_classes = [SessionAuthentication]
     permission_classes = [AllowAny]
@@ -227,31 +200,25 @@ class CampaignEmployeeSelectionView(APIView):
                 Order.OrderStatusEnum.SENT_TO_LOGISTIC_CENTER.name,
             ],
         )
-
-        employees = campaign.employees.exclude(
-            id__in=pending_orders.values_list(
-                'campaign_employee_id__employee__id', flat=True
+        employees = (
+            campaign.campaignemployee_set.select_related('employee')
+            .annotate(
+                full_name=Concat(
+                    'employee__first_name',
+                    Value(' '),
+                    'employee__last_name',
+                    output_field=CharField(),
+                ),
+                employee_group=F('employee__employee_group__name'),
+            )
+            .exclude(
+                employee__id__in=pending_orders.values_list(
+                    'campaign_employee_id__employee__id', flat=True
+                )
             )
         )
 
         for orders_data in pending_orders:
-            employee_group_campaign = EmployeeGroupCampaign.objects.filter(
-                campaign=campaign,
-                employee_group=orders_data.campaign_employee_id.employee.employee_group,
-            ).first()
-
-            order_products_price = 0
-            for order_product in orders_data.orderproduct_set.all():
-                order_products_price += get_campaign_product_price(
-                    campaign, order_product.product_id.product_id
-                )
-
-            added_cost = (
-                order_products_price - employee_group_campaign.budget_per_employee
-            )
-            if added_cost < 0:
-                added_cost = 0
-
             employee_list.append(
                 {
                     'has_order': True,
@@ -261,10 +228,11 @@ class CampaignEmployeeSelectionView(APIView):
                     'employee_group': (
                         orders_data.campaign_employee_id.employee.employee_group.name
                     ),
+                    'order_date_time': orders_data.order_date_time,
                     'product_names': orders_data.ordered_product_names(),
                     'product_kind': orders_data.ordered_product_kinds(),
-                    'added_cost': added_cost,
-                    'extra_money': True if added_cost > 0 else False,
+                    'added_cost': orders_data.cost_added,
+                    'extra_money': True if orders_data.cost_added > 0 else False,
                 }
             )
 
@@ -273,7 +241,9 @@ class CampaignEmployeeSelectionView(APIView):
                 {
                     'has_order': False,
                     'employee_name': employee.full_name,
-                    'employee_group': employee.employee_group.name,
+                    'order_date_time': None,
+                    'employee_group': employee.employee_group,
+                    'last_login': employee.last_login,
                     'product_names': '',
                     'product_kind': '',
                     'added_cost': 0,
@@ -763,6 +733,16 @@ class CampaignProductsView(APIView):
             'original_budget'
         )
         request_budget = request_serializer.validated_data.get('budget', None)
+        request_sort = request_serializer.validated_data.get('sort', None)
+        request_subcategories = request_serializer.validated_data.get(
+            'sub_categories', None
+        )
+        request_brands = request_serializer.validated_data.get('brands', None)
+        request_min_price = request_serializer.validated_data.get('min_price', None)
+        request_max_price = request_serializer.validated_data.get('max_price', None)
+        request_product_type = request_serializer.validated_data.get(
+            'product_type', None
+        )
 
         campaign_query = Campaign.objects.filter(code=campaign_code)
 
@@ -792,33 +772,11 @@ class CampaignProductsView(APIView):
                 status=status.HTTP_404_NOT_FOUND,
             )
 
-        products = (
-            EmployeeGroupCampaignProduct.objects.filter(
-                employee_group_campaign_id=employee_group_campaign,
-                product_id__active=True,
-            )
-            .select_related('product_id')
-            .annotate(
-                calculated_price=Coalesce(
-                    Subquery(
-                        OrganizationProduct.objects.filter(
-                            organization=campaign.organization,
-                            product=OuterRef('product_id'),
-                        )
-                        .annotate(
-                            org_price=Case(
-                                When(price__gt=0, then='price'),
-                                default=None,
-                                output_field=DecimalField(),
-                            )
-                        )
-                        .values('org_price')[:1],  # subquery output
-                    ),
-                    'product_id__sale_price',
-                    output_field=DecimalField(),
-                )
-            )
+        products = filter_campaign_products_with_calculated_price(
+            campaign=campaign, employee_group_campaign=employee_group_campaign
         )
+
+        products = products.filter(active=True)
 
         if request_category_id:
             products = products.filter(product_id__categories__id=request_category_id)
@@ -829,11 +787,38 @@ class CampaignProductsView(APIView):
                 | Q(product_id__name_he__icontains=request_q)
             )
 
+        # filter by categories
+        if request_subcategories:
+            products = products.filter(
+                product_id__tags__in=request_subcategories.split(',')
+            )
+
+        # filter by brands
+        if request_brands:
+            products = products.filter(
+                product_id__brand__id__in=request_brands.split(',')
+            )
+
+        # filter by min price
+        if request_min_price:
+            products = products.filter(
+                Q(calculated_price__gte=request_min_price) | Q(calculated_price=0)
+            )
+
+        # filter by max price
+        if request_max_price:
+            products = products.filter(calculated_price__lte=request_max_price)
+
+        # filter by product type
+        if request_product_type:
+            products = products.filter(
+                product_id__product_kind__in=request_product_type.split(',')
+            )
+        total_count = products.count()
         # count products before adding the budget filter if one was requested
         in_budget_count = products.filter(
             calculated_price__lte=employee_group_campaign.budget_per_employee
         ).count()
-        total_count = products.count()
 
         # TODO: remove original budget. this is now included in the budget
         # parameter and is kept in case some users have loaded and cached
@@ -861,7 +846,10 @@ class CampaignProductsView(APIView):
             )
 
         # a paginated query *must* have a definitive order_by
-        products = products.order_by('calculated_price', 'product_id_id')
+        order = 'calculated_price'
+        if request_sort and request_sort == 'desc':
+            order = '-calculated_price'
+        products = products.order_by(order, 'product_id_id')
 
         paginator = Paginator(products, request_limit)
         page = paginator.get_page(request_page)
@@ -967,8 +955,8 @@ class EmployeeLoginView(APIView):
                 'AUTH_ID': 'auth_id',
             }
             if not (
-                (egc.employee_group.auth_method in egc_auth_map.keys())
-                and (egc_auth_map[egc.employee_group.auth_method] in request.keys())
+                (employee.login_type in egc_auth_map.keys())
+                and (egc_auth_map[employee.login_type] in request.keys())
             ):
                 return Response(
                     {
@@ -981,11 +969,13 @@ class EmployeeLoginView(APIView):
                     status=status.HTTP_401_UNAUTHORIZED,
                 )
 
-            egc_auth_method = egc_auth_map[egc.employee_group.auth_method]
-
-            if egc_auth_method == 'auth_id':
+            if (
+                'auth_id' in request.keys()
+                and egc_auth_map[employee.login_type] == 'auth_id'
+            ):
                 # auth_id authorization groups need no otp
                 auth_token = jwt_encode({'employee_id': employee.pk})
+                self.update_last_login(campaign=campaign, employee=employee)
 
                 return Response(
                     {
@@ -1005,6 +995,7 @@ class EmployeeLoginView(APIView):
                 if employee.verify_otp(otp):
                     # otp was provided and successfuly validated
                     auth_token = jwt_encode({'employee_id': employee.pk})
+                    self.update_last_login(campaign=campaign, employee=employee)
 
                     return Response(
                         {
@@ -1033,12 +1024,12 @@ class EmployeeLoginView(APIView):
                         status=status.HTTP_401_UNAUTHORIZED,
                     )
 
-            if egc_auth_method == 'email':
+            if employee.login_type == 'EMAIL':
                 send_otp_token_email(
                     email=employee.email, otp_token=employee.generate_otp()
                 )
 
-            if egc_auth_method == 'phone_number':
+            if employee.login_type == 'SMS':
                 send_otp_token_sms(
                     phone_number=employee.phone_number,
                     otp_token=employee.generate_otp(),
@@ -1065,6 +1056,15 @@ class EmployeeLoginView(APIView):
                 },
                 status=status.HTTP_500_INTERNAL_SERVER_ERROR,
             )
+
+    @classmethod
+    def update_last_login(cls, campaign: Campaign, employee: Employee):
+        campaign_employee: CampaignEmployee = CampaignEmployee.objects.filter(
+            campaign=campaign, employee=employee
+        ).first()
+        if campaign_employee:
+            campaign_employee.last_login = datetime.now()
+            campaign_employee.save(update_fields=['last_login'])
 
 
 class OrderDetailsView(APIView):
@@ -1211,7 +1211,7 @@ class EmployeeOrderView(APIView):
             employees=employee,
             status=Campaign.CampaignStatusEnum.ACTIVE.name,
         ).first()
-
+        employee_group_campaign = None
         if campaign:
             employee_group_campaign = EmployeeGroupCampaign.objects.filter(
                 campaign=campaign, employee_group=employee.employee_group
@@ -1229,29 +1229,6 @@ class EmployeeOrderView(APIView):
                 status=status.HTTP_401_UNAUTHORIZED,
             )
 
-        request_data = EmployeeOrderRequestSerializer(
-            data=request.data,
-            context={
-                'delivery_location': (
-                    employee_group_campaign.employee_group.delivery_location
-                ),
-                'checkout_location': (employee_group_campaign.check_out_location),
-            },
-        )
-
-        if not request_data.is_valid():
-            return Response(
-                {
-                    'success': False,
-                    'message': 'Request is invalid.',
-                    'code': 'request_invalid',
-                    'status': status.HTTP_400_BAD_REQUEST,
-                    'data': request_data.errors,
-                },
-                status=status.HTTP_400_BAD_REQUEST,
-            )
-
-        request_order_data = request_data.validated_data
         cart = Cart.objects.filter(
             campaign_employee_id__campaign=campaign,
             campaign_employee_id__employee=employee,
@@ -1285,6 +1262,42 @@ class EmployeeOrderView(APIView):
                 status=status.HTTP_404_NOT_FOUND,
             )
 
+        products_kind = [
+            cart_product.product_id.product_id.product_kind
+            for cart_product in cart_products
+        ]
+
+        money_kind = [
+            kind for kind in products_kind if kind == Product.ProductKindEnum.MONEY.name
+        ]
+
+        request_data = EmployeeOrderRequestSerializer(
+            data=request.data,
+            context={
+                'delivery_location': (
+                    employee_group_campaign.employee_group.delivery_location
+                ),
+                'checkout_location': (employee_group_campaign.check_out_location),
+                'lang': request.GET.get('lang', 'en'),
+                'one_money_product': len(money_kind) > 0,
+                'all_money_product': len(products_kind) == len(money_kind),
+            },
+        )
+
+        if not request_data.is_valid():
+            return Response(
+                {
+                    'success': False,
+                    'message': 'Request is invalid.',
+                    'code': 'request_invalid',
+                    'status': status.HTTP_400_BAD_REQUEST,
+                    'data': request_data.errors,
+                },
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        request_order_data = request_data.validated_data
+
         # check if all the products are available
         for cart_product in cart_products:
             remaining_quantity = cart_product.product_id.product_id.remaining_quantity
@@ -1309,24 +1322,24 @@ class EmployeeOrderView(APIView):
         campaign_employee = CampaignEmployee.objects.filter(
             campaign=campaign, employee=employee
         ).first()
+        if campaign.campaign_type == Campaign.CampaignTypeEnum.NORMAL.name:
+            # check if there is already a pending order, and if so fail
+            existing_order = Order.objects.filter(
+                campaign_employee_id=campaign_employee,
+                status=Order.OrderStatusEnum.PENDING.name,
+            ).first()
 
-        # check if there is already a pending order, and if so fail
-        existing_order = Order.objects.filter(
-            campaign_employee_id=campaign_employee,
-            status=Order.OrderStatusEnum.PENDING.name,
-        ).first()
-
-        if existing_order:
-            return Response(
-                {
-                    'success': False,
-                    'message': 'Employee already ordered.',
-                    'code': 'already_ordered',
-                    'status': status.HTTP_400_BAD_REQUEST,
-                    'data': {},
-                },
-                status=status.HTTP_400_BAD_REQUEST,
-            )
+            if existing_order:
+                return Response(
+                    {
+                        'success': False,
+                        'message': 'Employee already ordered.',
+                        'code': 'already_ordered',
+                        'status': status.HTTP_400_BAD_REQUEST,
+                        'data': {},
+                    },
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
 
         employee_order = Order.objects.create(
             **request_order_data,
@@ -1354,19 +1367,34 @@ class EmployeeOrderView(APIView):
 
             for idx_1, product in enumerate(products):
                 employee_group_campaign_product = product
+                product_price = 0
                 quantity = cart_product.quantity
-                organization_product = OrganizationProduct.objects.filter(
-                    organization=employee.employee_group.organization,
-                    product=employee_group_campaign_product.product_id,
-                ).first()
-                if organization_product and organization_product.price:
-                    product_price = organization_product.price
+                if product.product_id.product_kind != 'MONEY':
+                    organization_product = OrganizationProduct.objects.filter(
+                        organization=employee.employee_group.organization,
+                        product=employee_group_campaign_product.product_id,
+                    ).first()
+                    if organization_product and organization_product.price:
+                        product_price = organization_product.price
+                    else:
+                        product_price = (
+                            employee_group_campaign_product.product_id.sale_price
+                        )
                 else:
-                    product_price = (
-                        employee_group_campaign_product.product_id.sale_price
+                    egcp = EmployeeGroupCampaignProduct
+                    product: egcp = egcp.objects.get(
+                        employee_group_campaign_id__campaign=campaign,
+                        employee_group_campaign_id__employee_group=employee.employee_group,
+                        product_id=product.product_id,
                     )
 
-                order_price += product_price * quantity
+                    if product:
+                        budget = (
+                            product.employee_group_campaign_id.budget_per_employee or 0
+                        )
+                        product_price = budget
+
+                order_price += (product_price if product_price else 0) * quantity
 
                 products_payment[f'productData[{str(idx + idx_1)}][quantity]'] = (
                     quantity
@@ -1378,14 +1406,22 @@ class EmployeeOrderView(APIView):
                 payment_description.append(
                     f'{employee_group_campaign_product.product_id.name} x {quantity}'
                 )
-
+                variations = cart_product.variations
+                lang = request.GET.get('lang', 'en')
+                if variations and lang == 'he':
+                    variations = transform_variations(variations, mode='request')
                 OrderProduct.objects.create(
                     order_id=employee_order,
                     product_id=employee_group_campaign_product,
                     quantity=quantity,
+                    variations=variations,
                 )
 
-        amount_to_be_payed = order_price - employee_group_campaign.budget_per_employee
+        total_budget = (
+            campaign_employee.total_budget if campaign_employee.total_budget else 0
+        )
+        left_budget = total_budget - employee.used_budget_campaign(campaign=campaign)
+        amount_to_be_payed = order_price - left_budget
 
         if (
             amount_to_be_payed > 0
@@ -1404,9 +1440,7 @@ class EmployeeOrderView(APIView):
             )
 
         employee_order.cost_from_budget = (
-            employee_group_campaign.budget_per_employee
-            if amount_to_be_payed > 0
-            else order_price
+            left_budget if amount_to_be_payed > 0 else order_price
         )
         employee_order.cost_added = amount_to_be_payed if amount_to_be_payed > 0 else 0
         employee_order.save(update_fields=['cost_from_budget', 'cost_added'])
@@ -1414,6 +1448,7 @@ class EmployeeOrderView(APIView):
         if amount_to_be_payed > 0:
             payer_full_name = request_order_data.get('full_name', None)
             payer_phone_number = request_order_data.get('phone_number', None)
+            print(amount_to_be_payed)
 
             payment_auth_code = initiate_payment(
                 employee_order,
@@ -1447,6 +1482,9 @@ class EmployeeOrderView(APIView):
         else:
             employee_order.status = employee_order.OrderStatusEnum.PENDING.name
             employee_order.save(update_fields=['status'])
+
+            if campaign.campaign_type == 'WALLET':
+                cart_products.delete()
 
             send_order_confirmation_email(employee_order)
 
@@ -1501,6 +1539,8 @@ class CartAddProductView(APIView):
         employee_group_campaign: EmployeeGroupCampaign,
         employee_group_campaign_product: EmployeeGroupCampaignProduct,
         quantity: int,
+        lang: str,
+        variations: dict = None,
     ) -> Cart:
         cart, _ = Cart.objects.get_or_create(campaign_employee_id=campaign_employee)
 
@@ -1508,24 +1548,34 @@ class CartAddProductView(APIView):
             employee_group_campaign.product_selection_mode
             == EmployeeGroupCampaign.ProductSelectionTypeEnum.MULTIPLE.name
         )
+        if variations and lang == 'he':
+            variations = transform_variations(variations, mode='request')
 
         if multi_selection:
-            existing_cart_product = CartProduct.objects.filter(
-                cart_id=cart, product_id=employee_group_campaign_product
-            ).first()
-
+            if variations:
+                existing_cart_product = CartProduct.objects.filter(
+                    cart_id=cart,
+                    product_id=employee_group_campaign_product,
+                    variations=variations,
+                ).first()
+            else:
+                existing_cart_product = CartProduct.objects.filter(
+                    cart_id=cart, product_id=employee_group_campaign_product
+                ).first()
             if existing_cart_product:
                 if quantity == 0:
                     existing_cart_product.delete()
                 else:
                     existing_cart_product.quantity = quantity
-                    existing_cart_product.save(update_fields=['quantity'])
+                    existing_cart_product.variations = variations
+                    existing_cart_product.save(update_fields=['quantity', 'variations'])
             else:
                 if quantity > 0:
                     new_cart_product = CartProduct(
                         cart_id=cart,
                         product_id=employee_group_campaign_product,
                         quantity=quantity,
+                        variations=variations,
                     )
                     new_cart_product.save()
         else:
@@ -1538,6 +1588,7 @@ class CartAddProductView(APIView):
                     cart_id=cart,
                     product_id=employee_group_campaign_product,
                     quantity=quantity,
+                    variations=variations,
                 )
                 new_cart_product.save()
 
@@ -1556,8 +1607,9 @@ class CartAddProductView(APIView):
                 },
                 status=status.HTTP_400_BAD_REQUEST,
             )
-        product_id, quantity = request_serializer.validated_data.values()
-
+        product_id = request_serializer.validated_data.get('product_id')
+        quantity = request_serializer.validated_data.get('quantity')
+        variations = request_serializer.validated_data.get('variations')
         campaign = Campaign.objects.filter(
             code=campaign_code, status=Campaign.CampaignStatusEnum.ACTIVE.name
         ).first()
@@ -1593,6 +1645,8 @@ class CartAddProductView(APIView):
             employee_group_campaign,
             employee_group_campaign_product,
             quantity,
+            request.GET.get('lang', 'en'),
+            variations,
         )
 
         return Response(
@@ -1725,7 +1779,11 @@ class GetCartProductsView(APIView):
 
         serializer = CartSerializer(
             cart,
-            context={'campaign': campaign, 'employee': request.user.employee_group},
+            context={
+                'campaign': campaign,
+                'employee': request.user.employee_group,
+                'lang': request.GET.get('lang', 'en'),
+            },
         )
 
         return Response(
@@ -1734,6 +1792,184 @@ class GetCartProductsView(APIView):
                 'message': 'Cart fetched successfully',
                 'status': status.HTTP_200_OK,
                 'data': serializer.data,
+            },
+            status=status.HTTP_200_OK,
+        )
+
+
+class FilterLookupView(APIView):
+    authentication_classes = [EmployeeAuthentication, QuickOfferAuthentication]
+    permission_classes = [EmployeeOrQuickOfferPermission]
+
+    @method_decorator(lang_decorator)
+    def get(self, request, campaign_code):
+        request_serializer = FilterLookupSerializer(data=request.GET)
+
+        if not request_serializer.is_valid():
+            return Response(
+                {
+                    'success': False,
+                    'message': 'Request is invalid.',
+                    'code': 'request_invalid',
+                    'status': status.HTTP_400_BAD_REQUEST,
+                    'data': request_serializer.errors,
+                },
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        request_lookup = request_serializer.validated_data['lookup']
+        request_q = request_serializer.validated_data.get('q', None)
+        category = request_serializer.validated_data.get('category')
+        request_sub_categories = request_serializer.validated_data.get('sub_categories')
+        request_product_kinds = request_serializer.validated_data.get('product_kinds')
+        request_brands = request_serializer.validated_data.get('brands')
+        including_tax = request_serializer.validated_data.get('including_tax', True)
+
+        employee_group_campaign = None
+
+        if request.user:
+            employee_group_campaign_query = (
+                EmployeeGroupCampaign.objects.select_related('campaign').filter(
+                    campaign__code=campaign_code,
+                    employee_group__pk=request.user.employee_group_id,
+                )
+            )
+
+            if not get_employee_admin_preview(request.user):
+                employee_group_campaign_query = employee_group_campaign_query.filter(
+                    campaign__status=Campaign.CampaignStatusEnum.ACTIVE.name
+                )
+
+            employee_group_campaign = employee_group_campaign_query.first()
+
+            if not employee_group_campaign:
+                return Response(
+                    {
+                        'success': False,
+                        'message': 'Campaign not found.',
+                        'code': 'not_found',
+                        'status': status.HTTP_404_NOT_FOUND,
+                    },
+                    status=status.HTTP_404_NOT_FOUND,
+                )
+            campaign = Campaign.objects.filter(code=campaign_code).first()
+            campaign_products = (
+                EmployeeGroupCampaignProduct.objects.filter(
+                    employee_group_campaign_id=employee_group_campaign.id,
+                    product_id__active=True,
+                )
+                .select_related('product_id')
+                .annotate(
+                    calculated_price=Coalesce(
+                        Subquery(
+                            OrganizationProduct.objects.filter(
+                                organization=campaign.organization,
+                                product=OuterRef('product_id'),
+                            )
+                            .annotate(
+                                org_price=Case(
+                                    When(price__gt=0, then='price'),
+                                    default=None,
+                                    output_field=DecimalField(),
+                                )
+                            )
+                            .values('org_price')[:1],  # subquery output
+                        ),
+                        'product_id__sale_price',
+                        output_field=DecimalField(),
+                    )
+                )
+            )
+            if category:
+                campaign_products = campaign_products.filter(
+                    product_id__categories__id=category
+                )
+            if request_product_kinds:
+                campaign_products = campaign_products.filter(
+                    product_id__product_kind__in=request_product_kinds.split(',')
+                )
+            if request_sub_categories:
+                campaign_products = campaign_products.filter(
+                    product_id__tags__in=request_sub_categories.split(',')
+                )
+            if request_brands:
+                campaign_products = campaign_products.filter(
+                    product_id__brand__id__in=request_brands.split(',')
+                )
+            request_budget = request_serializer.validated_data.get('budget')
+            if request_budget == 1:
+                # filter for products that cost up to and including the budget
+                campaign_products = campaign_products.filter(
+                    calculated_price__lte=employee_group_campaign.budget_per_employee
+                )
+            elif request_budget == 2:
+                # filter for products that cost exactly the same as the budget
+                campaign_products = campaign_products.filter(
+                    calculated_price=employee_group_campaign.budget_per_employee
+                )
+            elif request_budget == 3:
+                # filter for products that cost more than the budget
+                campaign_products = campaign_products.filter(
+                    Q(calculated_price__gte=employee_group_campaign.budget_per_employee)
+                    | Q(calculated_price=0)
+                )
+
+            if request_q:
+                campaign_products = campaign_products.filter(
+                    Q(product_id__name_en__icontains=request_q)
+                    | Q(product_id__name_he__icontains=request_q)
+                )
+
+            product_ids = [product.product_id_id for product in campaign_products]
+            campaign_or_quick_offer = employee_group_campaign.campaign
+        else:
+            quick_offer_products = request.quick_offer.products.filter(active=True)
+            if category:
+                quick_offer_products = quick_offer_products.filter(
+                    categories__id=category
+                )
+            if request_q:
+                quick_offer_products = quick_offer_products.filter(
+                    Q(name_en__icontains=request_q) | Q(name_he__icontains=request_q)
+                )
+            product_ids = quick_offer_products.values_list('id', flat=True)
+            campaign_or_quick_offer = request.quick_offer
+
+        serialized_data = None
+        success_msg = None
+        if request_lookup == 'product_kinds':
+            success_msg = 'Product kinds fetched successfully.'
+            data = get_campaign_product_kinds(product_ids)
+            serialized_data = FilterLookupProductKindsSerializer(data, many=True).data
+        elif request_lookup == 'brands':
+            success_msg = 'Brands fetched successfully.'
+            data = get_campaign_brands(product_ids)
+            serialized_data = FilterLookupBrandsSerializer(data, many=True).data
+        elif request_lookup == 'sub_categories':
+            success_msg = 'Sub categories fetched successfully.'
+            data = get_campaign_tags(product_ids)
+            serialized_data = FilterLookupTagsSerializer(data, many=True).data
+        elif request_lookup == 'max_price':
+            success_msg = 'Max price fetched successfully.'
+            if isinstance(campaign_or_quick_offer, Campaign):
+                serialized_data = get_campaign_max_product_price(
+                    product_ids=product_ids,
+                    campaign=campaign_or_quick_offer,
+                    employee_group_campaign=employee_group_campaign,
+                )
+            else:
+                serialized_data = get_quick_offer_max_product_price(
+                    product_ids=product_ids,
+                    quick_offer=campaign_or_quick_offer,
+                    tax_percent=settings.TAX_PERCENT if not including_tax else 0,
+                )
+
+        return Response(
+            {
+                'success': True,
+                'message': success_msg,
+                'status': status.HTTP_200_OK,
+                'data': serialized_data,
             },
             status=status.HTTP_200_OK,
         )
@@ -1750,19 +1986,9 @@ class OrganizationQuickOfferView(APIView):
             not getattr(request.user, 'is_anonymous', False)
             and request.quick_offer.code == quick_offer_code
         ):
-            if request.quick_offer.status != QuickOffer.StatusEnum.ACTIVE.name:
-                return Response(
-                    {'detail': 'You do not have permission to perform this action.'},
-                    status=status.HTTP_403_FORBIDDEN,
-                )
             serializer = QuickOfferSerializer(request.quick_offer)
 
         else:
-            if quick_offer_data.status != QuickOffer.StatusEnum.ACTIVE.name:
-                return Response(
-                    {'detail': 'You do not have permission to perform this action.'},
-                    status=status.HTTP_403_FORBIDDEN,
-                )
             serializer = QuickOfferReadOnlySerializer(quick_offer_data)
 
         return Response(
@@ -1776,13 +2002,47 @@ class OrganizationQuickOfferView(APIView):
         )
 
 
+class UpdateOrganizationQuickOfferView(APIView):
+    authentication_classes = [QuickOfferAuthentication]
+    permission_classes = [QuickOfferPermissions]
+
+    @method_decorator(lang_decorator)
+    def put(self, request):
+        quick_offer: QuickOffer = request.quick_offer
+
+        request_serializer = QuickOfferUpdateSendMyOrderSerializer(data=request.data)
+        if not request_serializer.is_valid():
+            return Response(
+                {
+                    'success': False,
+                    'message': 'Request is invalid.',
+                    'code': 'request_invalid',
+                    'status': status.HTTP_400_BAD_REQUEST,
+                    'data': request_serializer.errors,
+                },
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        quick_offer.send_my_list = request_serializer.validated_data.get('send_my_list')
+        quick_offer.save()
+
+        return Response(
+            {
+                'success': True,
+                'message': 'List sent successfully.',
+                'status': status.HTTP_200_OK,
+                'data': request_serializer.validated_data,
+            },
+            status=status.HTTP_200_OK,
+        )
+
+
 class OrganizationQuickOfferLoginView(APIView):
     permission_classes = [AllowAny]
 
     def post(self, request, quick_offer_code):
         try:
             quick_offer = QuickOffer.objects.filter(code=quick_offer_code).first()
-
             if (
                 not quick_offer
                 or quick_offer.status != QuickOffer.StatusEnum.ACTIVE.name
@@ -1817,6 +2077,8 @@ class OrganizationQuickOfferLoginView(APIView):
 
             if quick_offer.auth_method == QuickOffer.AuthMethodEnum.AUTH_ID.name:
                 if request_auth_id == quick_offer.auth_id:
+                    quick_offer.last_login = datetime.now()
+                    quick_offer.save(update_fields=['last_login'])
                     return Response(
                         {
                             'success': True,
@@ -1849,6 +2111,8 @@ class OrganizationQuickOfferLoginView(APIView):
             ):
                 if request_otp:
                     if quick_offer.verify_otp(request_otp):
+                        quick_offer.last_login = datetime.now()
+                        quick_offer.save(update_fields=['last_login'])
                         return Response(
                             {
                                 'success': True,
@@ -1926,9 +2190,7 @@ class ValidateCodeView(APIView):
     permission_classes = [AllowAny]
 
     def get(self, request, code):
-        campaign = Campaign.objects.filter(
-            code=code, status=Campaign.CampaignStatusEnum.ACTIVE.name
-        ).exists()
+        campaign = Campaign.objects.filter(code=code).exists()
 
         if campaign:
             return Response(
@@ -1941,9 +2203,7 @@ class ValidateCodeView(APIView):
                 status=status.HTTP_200_OK,
             )
 
-        quick_offer = QuickOffer.objects.filter(
-            code=code, status=QuickOffer.StatusEnum.ACTIVE.name
-        ).exists()
+        quick_offer = QuickOffer.objects.filter(code=code).exists()
 
         if quick_offer:
             return Response(
@@ -1992,17 +2252,41 @@ class QuickOfferProductsView(APIView):
         request_page = request_serializer.validated_data.get('page', 1)
         request_category_id = request_serializer.validated_data.get('category_id', None)
         request_q = request_serializer.validated_data.get('q', None)
+        request_sort = request_serializer.validated_data.get('sort', None)
+        request_subcategories = request_serializer.validated_data.get(
+            'sub_categories', None
+        )
+        request_brands = request_serializer.validated_data.get('brands', None)
+        request_min_price = request_serializer.validated_data.get('min_price', None)
+        request_max_price = request_serializer.validated_data.get('max_price', None)
+        request_product_type = request_serializer.validated_data.get(
+            'product_type', None
+        )
 
         request_including_tax = request_serializer.validated_data.get(
             'including_tax', True
         )
-        try:
-            tax_amount = int(settings.TAX_AMOUNT)
-        except ValueError:
-            tax_amount = 0
-        tax_amount = tax_amount if not request_including_tax and tax_amount else 0
 
-        products = quick_offer.products.all()
+        products = quick_offer.products.annotate(
+            calculated_price=Coalesce(
+                Subquery(
+                    OrganizationProduct.objects.filter(
+                        organization=request.quick_offer.organization,
+                        product=OuterRef('id'),
+                    )
+                    .annotate(
+                        org_price=Case(
+                            When(price__gt=0, then='price'),
+                            default=None,
+                            output_field=DecimalField(),
+                        )
+                    )
+                    .values('org_price')[:1],  # subquery output
+                ),
+                'sale_price',
+                output_field=DecimalField(),
+            )
+        )
 
         if request_category_id:
             products = products.filter(categories__id=request_category_id)
@@ -2012,9 +2296,43 @@ class QuickOfferProductsView(APIView):
                 Q(name_en__icontains=request_q) | Q(name_he__icontains=request_q)
             )
 
+        # filter by categories
+        if request_subcategories:
+            products = products.filter(tags__in=request_subcategories.split(','))
+
+        # filter by brands
+        if request_brands:
+            products = products.filter(brand__id__in=request_brands.split(','))
+
+        # filter by min price
+        if request_min_price:
+            products = products.filter(
+                Q(calculated_price__gte=request_min_price) | Q(calculated_price=0)
+            )
+
+        # filter by max price
+        if request_max_price:
+            if not request_including_tax:
+                # add tax to the max price filter since we are always filtering
+                # by the price which includes tax, but the user "works with"
+                # prices which do not include tax if they chose the option
+                request_max_price = request_max_price * (1 + settings.TAX_PERCENT / 100)
+
+            products = products.filter(
+                Q(calculated_price__lte=request_max_price) | Q(calculated_price=0)
+            )
+
+        # filter by product type
+        if request_product_type:
+            products = products.filter(product_kind__in=request_product_type.split(','))
+
         total_count = products.count()
 
-        products = products.order_by('id')
+        # a paginated query *must* have a definitive order_by
+        order = 'calculated_price'
+        if request_sort and request_sort == 'desc':
+            order = '-calculated_price'
+        products = products.order_by(order, 'id')
 
         paginator = Paginator(products, request_limit)
         page = paginator.get_page(request_page)
@@ -2022,7 +2340,11 @@ class QuickOfferProductsView(APIView):
         products_serializer = QuickOfferProductsResponseSerializer(
             page,
             many=True,
-            context={'quick_offer': quick_offer, 'tax_amount': tax_amount},
+            context={
+                'quick_offer': quick_offer,
+                'deduct_tax': not request_including_tax,
+                **request_serializer.validated_data,
+            },
         )
 
         return Response(
@@ -2077,13 +2399,14 @@ class QuickOfferProductView(APIView):
         request_including_tax = request_serializer.validated_data.get(
             'including_tax', True
         )
-        try:
-            tax_amount = int(settings.TAX_AMOUNT)
-        except ValueError:
-            tax_amount = 0
-        tax_amount = tax_amount if not request_including_tax and tax_amount else 0
+
         serializer = QuickOfferProductSerializer(
-            product, context={'quick_offer': quick_offer, 'tax_amount': tax_amount}
+            product,
+            context={
+                'quick_offer': quick_offer,
+                'deduct_tax': not request_including_tax,
+                **request_serializer.validated_data,
+            },
         )
         return Response(
             {
@@ -2118,6 +2441,11 @@ class QuickOfferSelectProductsView(APIView):
 
         product_id = serializer.validated_data.get('product_id')
         quantity = serializer.validated_data.get('quantity')
+        variations = serializer.validated_data.get('variations')
+        lang = request.GET.get('lang', 'en')
+
+        if variations and lang == 'he':
+            variations = transform_variations(variations, mode='request')
 
         if not quick_offer.products.filter(id=product_id).exists():
             return Response(
@@ -2130,12 +2458,17 @@ class QuickOfferSelectProductsView(APIView):
                 },
                 status=status.HTTP_404_NOT_FOUND,
             )
-
-        QuickOfferSelectedProduct.objects.update_or_create(
-            product=Product.objects.get(id=product_id),
-            quick_offer=quick_offer,
-            defaults={'quantity': quantity},
-        )
+        if not quantity:
+            QuickOfferSelectedProduct.objects.filter(
+                product=Product.objects.get(id=product_id),
+                quick_offer=quick_offer,
+            ).delete()
+        else:
+            QuickOfferSelectedProduct.objects.update_or_create(
+                product=Product.objects.get(id=product_id),
+                quick_offer=quick_offer,
+                defaults={'quantity': quantity, 'variations': variations},
+            )
 
         return Response(
             {
@@ -2169,19 +2502,22 @@ class GetQuickOfferSelectProductsView(APIView):
         request_including_tax = request_serializer.validated_data.get(
             'including_tax', True
         )
-        try:
-            tax_amount = int(settings.TAX_AMOUNT)
-        except ValueError:
-            tax_amount = 0
-        tax_amount = tax_amount if not request_including_tax and tax_amount else 0
         quick_offer: QuickOffer = request.quick_offer
-        selected_quick_offer = QuickOfferSelectedProduct.objects.filter(
-            quick_offer=quick_offer, quantity__gt=0
-        ).all()
+        selected_quick_offer = (
+            QuickOfferSelectedProduct.objects.filter(
+                quick_offer=quick_offer, quantity__gt=0
+            )
+            .all()
+            .order_by('id')
+        )
         serializer = QuickOfferSelectProductsDetailSerializer(
             selected_quick_offer,
             many=True,
-            context={'quick_offer': quick_offer, 'tax_amount': tax_amount},
+            context={
+                'quick_offer': quick_offer,
+                'deduct_tax': not request_including_tax,
+                'lang': request.GET.get('lang', 'en'),
+            },
         )
         return Response(
             {
@@ -2336,17 +2672,16 @@ class GetQuickOfferShareView(APIView):
         request_including_tax = request_serializer.validated_data.get(
             'including_tax', True
         )
-        try:
-            tax_amount = int(settings.TAX_AMOUNT)
-        except ValueError:
-            tax_amount = 0
-        tax_amount = tax_amount if not request_including_tax and tax_amount else 0
+
         if share.share_type == ShareTypeEnum.Product.value:
             product_shares = share.products.all()
             response_data['products'] = QuickOfferProductSerializer(
                 product_shares,
                 many=True,
-                context={'quick_offer': share.quick_offer, 'tax_amount': tax_amount},
+                context={
+                    'quick_offer': share.quick_offer,
+                    'deduct_tax': request_including_tax,
+                },
             ).data
 
         elif share.share_type == ShareTypeEnum.Cart.value:
@@ -2354,14 +2689,20 @@ class GetQuickOfferShareView(APIView):
                 quick_offer = share.quick_offer
                 products = quick_offer.selected_products.all()
                 selected_products = QuickOfferSelectedProduct.objects.filter(
-                    quick_offer=quick_offer, product__id__in=products
+                    quick_offer=quick_offer, product__id__in=products, quantity__gt=0
                 )
 
-                response_data['cart'] = QuickOfferSelectProductsDetailSerializer(
-                    selected_products,
-                    many=True,
-                    context={'quick_offer': quick_offer, 'tax_amount': tax_amount},
-                ).data
+                response_data['cart'] = {
+                    'products': QuickOfferSelectProductsDetailSerializer(
+                        selected_products,
+                        many=True,
+                        context={
+                            'quick_offer': quick_offer,
+                            'deduct_tax': not request_including_tax,
+                            'lang': request.GET.get('lang', 'en'),
+                        },
+                    ).data
+                }
 
             except (Cart.DoesNotExist, AttributeError):
                 return Response(
@@ -2385,16 +2726,12 @@ class GetQuickOfferShareView(APIView):
         )
 
 
-class QuickOfferOrderView(APIView):
-    authentication_classes = [QuickOfferAuthentication]
-    permission_classes = [QuickOfferPermissions]
+class QuickOfferImpersonationTokenExhcangeView(APIView):
+    permission_classes = [AllowAny]
 
-    def post(self, request):
-        quick_offer = request.quick_offer
+    def post(self, request, quick_offer_code):
+        request_data = CampaignExchangeRequestSerializer(data=request.data)
 
-        request_data = QuickOfferOrderRequestSerializer(
-            data=request.data
-        )
         if not request_data.is_valid():
             return Response(
                 {
@@ -2402,20 +2739,64 @@ class QuickOfferOrderView(APIView):
                     'message': 'Request is invalid.',
                     'code': 'request_invalid',
                     'status': status.HTTP_400_BAD_REQUEST,
-                    'data': request_data.errors,
+                    'data': {},
                 },
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
-        request_order_data = request_data.validated_data
+        request_token = request_data.validated_data['t']
 
-        selected_products = QuickOfferSelectedProduct.objects.filter(quick_offer=request.quick_offer)
+        impersonation_token = CampaignImpersonationToken.objects.filter(
+            token=request_token,
+            quick_offer__code=quick_offer_code,
+            valid_until_epoch_seconds__gte=int(time()),
+            used=False,
+        ).first()
 
-        if len(selected_products) == 0:
+        if not impersonation_token:
             return Response(
                 {
                     'success': False,
-                    'message': 'Empty cart.',
+                    'message': 'Not found.',
+                    'code': 'not_found',
+                    'status': status.HTTP_404_NOT_FOUND,
+                },
+                status=status.HTTP_404_NOT_FOUND,
+            )
+
+        token_payload = {
+            'admin_id': impersonation_token.user.id,
+            'quick_offer_id': impersonation_token.quick_offer.id,
+        }
+
+        auth_token = jwt_encode(token_payload)
+
+        impersonation_token.used = True
+        impersonation_token.save(update_fields=['used'])
+
+        return Response(
+            {
+                'success': True,
+                'message': 'Token exchanged successfully.',
+                'status': status.HTTP_200_OK,
+                'data': {
+                    'auth_token': auth_token,
+                },
+            },
+            status=status.HTTP_200_OK,
+        )
+
+
+class OrganizationView(APIView):
+    authentication_classes = [SessionAuthentication]
+
+    def get(self, request, organization_id):
+        organization = Organization.objects.filter(id=organization_id).first()
+        if not organization:
+            return Response(
+                {
+                    'success': False,
+                    'message': 'Organization not found.',
                     'code': 'not_found',
                     'status': status.HTTP_404_NOT_FOUND,
                     'data': {},
@@ -2423,141 +2804,64 @@ class QuickOfferOrderView(APIView):
                 status=status.HTTP_404_NOT_FOUND,
             )
 
-        # check if all the products are available
-        for selected_product in selected_products:
-            remaining_quantity = selected_product.product.remaining_quantity
-            if remaining_quantity < selected_product.quantity:
-                return Response(
-                    {
-                        'success': False,
-                        'message': gettext(
-                            (
-                                'The requested quantity is not available. '
-                                'The remaining quantity is %(remaining_quantity)d.'
-                            )
-                        )
-                                   % {'remaining_quantity': remaining_quantity},
-                        'code': 'request_invalid',
-                        'status': status.HTTP_400_BAD_REQUEST,
-                        'data': request_data.errors,
-                    },
-                    status=status.HTTP_400_BAD_REQUEST,
-                )
+        organization = OrganizationSerializer(
+            organization,
+            context={'field_names': [f.name for f in Organization._meta.fields]},
+        ).data
 
-        # check if there is already a pending order, and if so fail
-        existing_order = QuickOfferOrder.objects.filter(
-            quick_offer=quick_offer,
-            status=QuickOfferOrder.OrderStatusEnum.PENDING,
-        ).first()
+        return Response(
+            {
+                'success': True,
+                'message': 'Organization fetched successfully.',
+                'status': status.HTTP_200_OK,
+                'data': organization,
+            },
+            status=status.HTTP_200_OK,
+        )
 
-        if existing_order:
+
+class OrganizationProductView(APIView):
+    authentication_classes = [SessionAuthentication]
+
+    def put(self, request):
+        request_serializer = OrganizationProductPutSerializer(data=request.data)
+        if not request_serializer.is_valid():
             return Response(
                 {
                     'success': False,
-                    'message': 'Quick Offer already ordered.',
-                    'code': 'already_ordered',
+                    'message': 'Request is invalid.',
+                    'code': 'request_invalid',
                     'status': status.HTTP_400_BAD_REQUEST,
-                    'data': {},
+                    'data': request_serializer.errors,
                 },
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
-        order = QuickOfferOrder.objects.create(**request_order_data, quick_offer=quick_offer)
+        request_organization_id = request_serializer.validated_data.get('organization')
+        request_product_id = request_serializer.validated_data.get('product')
+        request_price = request_serializer.validated_data.get('price')
 
-        for idx, selected_product in enumerate(selected_products):
-            QuickOfferOrderProduct.objects.create(
-                quick_offer_order=order,
-                product_id=selected_product.product,
-                quantity=selected_product.quantity,
-            )
-
-        return Response(
-            {
-                'success': True,
-                'message': 'Order placed successfully.',
-                'status': status.HTTP_200_OK,
-                'data': {'reference': order.reference},
-            },
-            status=status.HTTP_200_OK,
-        )
-
-
-    @method_decorator(lang_decorator)
-    def get(self, request):
-        quick_offer = request.quick_offer
-
-        order = QuickOfferOrder.objects.filter(
-            quick_offer=quick_offer,
-            status=QuickOfferOrder.OrderStatusEnum.PENDING,
+        organization_product = OrganizationProduct.objects.filter(
+            organization=request_organization_id, product=request_product_id
         ).first()
-
-        if not order:
-            return Response(
-                {
-                    'success': False,
-                    'message': 'Order not found.',
-                    'code': 'not_found',
-                    'status': status.HTTP_404_NOT_FOUND,
-                    'data': {},
-                },
-                status=status.HTTP_404_NOT_FOUND,
+        if organization_product:
+            organization_product.price = request_price
+        else:
+            organization_product = OrganizationProduct.objects.create(
+                organization=request_organization_id,
+                product=request_product_id,
+                price=request_price,
             )
 
-        order_serializer = QuickOfferOrderSerializer(
-            order,
-            context={
-                'quick_offer': quick_offer,
-            },
-        )
+        organization_product.save()
+        response_serializer = OrganizationProductPutSerializer(organization_product)
 
         return Response(
             {
                 'success': True,
-                'message': 'Quick offer order fetched successfully.',
+                'message': 'Organization product updated successfully.',
                 'status': status.HTTP_200_OK,
-                'data': order_serializer.data,
-            },
-            status=status.HTTP_200_OK,
-        )
-
-
-class QuickOfferCancelOrderView(APIView):
-    authentication_classes = [QuickOfferAuthentication]
-    permission_classes = [QuickOfferPermissions]
-
-    def put(self, request, order_id):
-        quick_offer = request.quick_offer
-
-        order = QuickOfferOrder.objects.filter(
-            pk=order_id,
-            quick_offer=quick_offer,
-            status=QuickOfferOrder.OrderStatusEnum.PENDING,
-        ).first()
-
-        # order not found
-        if not order:
-            return Response(
-                {
-                    'success': False,
-                    'message': 'Order not found.',
-                    'code': 'not_found',
-                    'status': status.HTTP_404_NOT_FOUND,
-                    'data': {},
-                },
-                status=status.HTTP_404_NOT_FOUND,
-            )
-
-        order.status = Order.OrderStatusEnum.CANCELLED
-        order.save()
-
-        QuickOfferSelectedProduct.objects.filter(quick_offer=request.quick_offer).delete()
-
-        return Response(
-            {
-                'success': True,
-                'message': 'order canceled successfully.',
-                'status': status.HTTP_200_OK,
-                'data': {},
+                'data': response_serializer.data,
             },
             status=status.HTTP_200_OK,
         )

@@ -16,7 +16,7 @@ const updateViewOrder = (orderProducts, supplierName, orderId) => {
             sku: _prod_data.sku,
             barcode: _prod_data.barcode,
             cost_price: _prod_data.cost_price,
-            status: _prod_data.status,
+            status: _prod_data.status
         }]
     });
     const newRows = orderProducts.reduce((rows, orderProduct) => `

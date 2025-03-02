@@ -1,0 +1,55 @@
+# SOME DESCRIPTIVE TITLE.
+# Copyright (C) YEAR THE PACKAGE'S COPYRIGHT HOLDER
+# This file is distributed under the same license as the PACKAGE package.
+# FIRST AUTHOR <EMAIL@ADDRESS>, YEAR.
+#
+#, fuzzy
+msgid ""
+msgstr ""
+"Project-Id-Version: PACKAGE VERSION\n"
+"Report-Msgid-Bugs-To: \n"
+"POT-Creation-Date: 2024-09-25 19:19+0100\n"
+"PO-Revision-Date: YEAR-MO-DA HO:MI+ZONE\n"
+"Last-Translator: FULL NAME <EMAIL@ADDRESS>\n"
+"Language-Team: LANGUAGE <LL@li.org>\n"
+"Language: \n"
+"MIME-Version: 1.0\n"
+"Content-Type: text/plain; charset=UTF-8\n"
+"Content-Transfer-Encoding: 8bit\n"
+"Plural-Forms: nplurals=4; plural=(n == 1 && n % 1 == 0) ? 0 : (n == 2 && n % "
+"1 == 0) ? 1: (n % 10 == 0 && n % 1 == 0 && n > 10) ? 2 : 3;\n"
+
+#: admin_actions.py:44
+#, python-format
+msgid "%d campaign was successfully marked as active."
+msgid_plural "%d campaigns were successfully marked as active."
+msgstr[0] ""
+msgstr[1] ""
+
+#: admin_actions.py:62
+#, python-format
+msgid "%d campaign's invitation was successfully resent."
+msgid_plural "%d campaigns' invitatinos were successfully resent."
+msgstr[0] ""
+msgstr[1] ""
+
+#: admin_actions.py:75
+#, python-format
+msgid "%d campaign was successfully marked as finished."
+msgid_plural "%d campaigns were successfully marked as finished."
+msgstr[0] ""
+msgstr[1] ""
+
+#: admin_actions.py:183
+#, python-format
+msgid "%d order was scheduled to be sent to the logistics center."
+msgid_plural "%d orders were scheduled to be sent to the logistics center."
+msgstr[0] ""
+msgstr[1] ""
+
+#: admin_views.py:373
+#, python-format
+msgid "Successfully sent welcome message to %d employee."
+msgid_plural "Successfully sent welcome messages to %d employees."
+msgstr[0] ""
+msgstr[1] ""

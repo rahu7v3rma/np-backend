@@ -38,6 +38,7 @@ class PaymentWebhookViewTest(TestCase):
             first_name='John',
             last_name='Smith',
             phone_number='0509721696',
+            email='test@gmail.com',
             auth_id='employee_auth_id',
             active=True,
             employee_group=EmployeeGroup.objects.first(),
@@ -110,7 +111,7 @@ class PaymentWebhookViewTest(TestCase):
             email_welcome_text='',
         )
         self.campaign_employee = CampaignEmployee.objects.create(
-            campaign=self.campaign, employee=self.employee
+            campaign=self.campaign, employee=self.employee, total_budget=100
         )
         self.order = Order.objects.create(
             campaign_employee_id=self.campaign_employee,

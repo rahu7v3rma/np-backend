@@ -5,6 +5,7 @@ from unittest.mock import patch
 
 from celery.exceptions import Retry
 from django.conf import settings
+from django.core.exceptions import ValidationError
 from django.test import TestCase, override_settings
 import responses
 
@@ -21,12 +22,11 @@ from campaign.models import (
     Organization,
 )
 from inventory.models import Brand, Product, ProductBundleItem, Supplier
+from logistics.enums import LogisticsCenterEnum, LogisticsCenterMessageTypeEnum
 from logistics.models import (
-    LogisticsCenterEnum,
     LogisticsCenterInboundReceipt,
     LogisticsCenterInboundReceiptLine,
     LogisticsCenterMessage,
-    LogisticsCenterMessageTypeEnum,
     LogisticsCenterOrderStatus,
     LogisticsCenterStockSnapshot,
     LogisticsCenterStockSnapshotLine,
@@ -35,14 +35,14 @@ from logistics.models import (
 )
 from logistics.providers.orian import (
     _platform_id_to_orian_id,
-    add_or_update_inbound,
-    add_or_update_outbound,
-    add_or_update_product,
-    add_or_update_supplier,
+    add_or_update_inbound as orian_add_or_update_inbound,
+    add_or_update_outbound as orian_add_or_update_outbound,
+    add_or_update_product as orian_add_or_update_product,
+    add_or_update_supplier as orian_add_or_update_supplier,
 )
 from logistics.tasks import (
     process_logistics_center_message,
-    process_logistics_center_snapshot,
+    process_logistics_center_snapshot_file,
     send_order_to_logistics_center,
     sync_product_with_logistics_center,
 )
@@ -260,7 +260,7 @@ class OrianProviderTestCase(TestCase):
             status=200,  # orian responds with status 200 even with errors
         )
 
-        result = add_or_update_supplier(self.supplier)
+        result = orian_add_or_update_supplier(self.supplier)
 
         # result should be false since the mock api responded with an error
         self.assertEquals(result, False)
@@ -280,7 +280,7 @@ class OrianProviderTestCase(TestCase):
             status=200,  # orian responds with status 200 even with errors
         )
 
-        result = add_or_update_supplier(self.supplier)
+        result = orian_add_or_update_supplier(self.supplier)
 
         # result should be true since we succeeded
         self.assertEquals(result, True)
@@ -300,7 +300,7 @@ class OrianProviderTestCase(TestCase):
             status=200,  # orian responds with status 200 even with errors
         )
 
-        result = add_or_update_product(self.product_1)
+        result = orian_add_or_update_product(self.product_1)
 
         # result should be false since the mock api responded with an error
         self.assertEquals(result, False)
@@ -320,7 +320,7 @@ class OrianProviderTestCase(TestCase):
             status=200,  # orian responds with status 200 even with errors
         )
 
-        result = add_or_update_product(self.product_1)
+        result = orian_add_or_update_product(self.product_1)
 
         # result should be true since we succeeded
         self.assertEquals(result, True)
@@ -346,7 +346,7 @@ class OrianProviderTestCase(TestCase):
         self.product_1.save(update_fields=['name_he'])
         self.product_1.refresh_from_db()
 
-        result = add_or_update_product(self.product_1)
+        result = orian_add_or_update_product(self.product_1)
 
         # result should be true since we succeeded
         self.assertEquals(result, True)
@@ -371,7 +371,7 @@ class OrianProviderTestCase(TestCase):
         self.product_1.save(update_fields=['name_he'])
         self.product_1.refresh_from_db()
 
-        result = add_or_update_product(self.product_1)
+        result = orian_add_or_update_product(self.product_1)
 
         # result should be true since we succeeded
         self.assertEquals(result, True)
@@ -402,7 +402,7 @@ class OrianProviderTestCase(TestCase):
         self.product_1.save(update_fields=['name_he'])
         self.product_1.refresh_from_db()
 
-        result = add_or_update_product(self.product_1)
+        result = orian_add_or_update_product(self.product_1)
 
         # result should be true since we succeeded
         self.assertEquals(result, True)
@@ -442,7 +442,7 @@ class OrianProviderTestCase(TestCase):
             status=200,  # orian responds with status 200 even with errors
         )
 
-        result = add_or_update_inbound(self.purchase_order_1, datetime.now())
+        result = orian_add_or_update_inbound(self.purchase_order_1, datetime.now())
 
         # result should be false since the mock api responded with an error
         self.assertEquals(result, False)
@@ -462,7 +462,7 @@ class OrianProviderTestCase(TestCase):
             status=200,  # orian responds with status 200 even with errors
         )
 
-        result = add_or_update_inbound(self.purchase_order_1, datetime.now())
+        result = orian_add_or_update_inbound(self.purchase_order_1, datetime.now())
 
         # result should be true since we succeeded
         self.assertEquals(result, True)
@@ -489,7 +489,7 @@ class OrianProviderTestCase(TestCase):
             status=200,  # orian responds with status 200 even with errors
         )
 
-        result = add_or_update_inbound(self.purchase_order_2, datetime.now())
+        result = orian_add_or_update_inbound(self.purchase_order_2, datetime.now())
 
         # result should be true since we succeeded
         self.assertEquals(result, True)
@@ -519,7 +519,7 @@ class OrianProviderTestCase(TestCase):
 
         # fetch the order so manager annotated fields are included
         order = Order.objects.get(pk=self.order_1.pk)
-        result = add_or_update_outbound(
+        result = orian_add_or_update_outbound(
             order,
             order.ordered_products(),
             datetime.now(),
@@ -545,7 +545,7 @@ class OrianProviderTestCase(TestCase):
 
         # fetch the order so manager annotated fields are included
         order = Order.objects.get(pk=self.order_1.pk)
-        result = add_or_update_outbound(
+        result = orian_add_or_update_outbound(
             order,
             order.ordered_products(),
             datetime.now(),
@@ -618,7 +618,7 @@ class OrianProviderTestCase(TestCase):
 
         # fetch the order so manager annotated fields are included
         order = Order.objects.get(pk=self.order_2.pk)
-        result = add_or_update_outbound(
+        result = orian_add_or_update_outbound(
             order,
             order.ordered_products(),
             datetime.now(),
@@ -696,7 +696,7 @@ class OrianProviderTestCase(TestCase):
 
         # fetch the order so manager annotated fields are included
         order = Order.objects.get(pk=self.order_3.pk)
-        result = add_or_update_outbound(
+        result = orian_add_or_update_outbound(
             order,
             order.ordered_products(),
             datetime.now(),
@@ -774,6 +774,7 @@ class OrianProviderTestCase(TestCase):
     ORIAN_BASE_URL='https://test.local',
     ORIAN_API_TOKEN='1234',
     ORIAN_CONSIGNEE='AAA',
+    ACTIVE_LOGISTICS_CENTER=LogisticsCenterEnum.ORIAN,
 )
 class SendPurchaseOrderToLogisticsCenterTestCase(TestCase):
     def setUp(self):
@@ -799,9 +800,7 @@ class SendPurchaseOrderToLogisticsCenterTestCase(TestCase):
             quantity_sent_to_logistics_center=0,
         )
 
-    @patch(
-        'logistics.signals.send_purchase_order_to_logistics_center', return_value=True
-    )
+    @patch('logistics.tasks.send_purchase_order_to_logistics_center', return_value=True)
     def test_task_triggered_on_purchase_order_approve(self, mock_send_task):
         # mock is not called to begin with
         self.assertEquals(mock_send_task.apply_async.call_count, 0)
@@ -834,27 +833,21 @@ class SendPurchaseOrderToLogisticsCenterTestCase(TestCase):
 
         # update an existing purchase order's status to approved and the task
         # should be invoked
-        self.purchase_order_1.status = PurchaseOrder.Status.APPROVED.name
-        self.purchase_order_1.save()
+        self.purchase_order_1.approve()
 
         # mock was called
         self.assertEquals(mock_send_task.apply_async.call_count, 1)
         self.assertEquals(
-            mock_send_task.apply_async.call_args[0], ((self.purchase_order_1.pk,),)
+            mock_send_task.apply_async.call_args[0],
+            ((self.purchase_order_1.pk, LogisticsCenterEnum.ORIAN),),
         )
 
-        # create a new purchase order with an approved status and the task
-        # should be invoked again
-        new_purchase_order = PurchaseOrder.objects.create(
-            supplier=self.supplier,
-            status=PurchaseOrder.Status.APPROVED.name,
-        )
+        # approving a purchase order again should raise a validation error
+        with self.assertRaises(ValidationError):
+            self.purchase_order_1.approve()
 
-        # mock was called again
-        self.assertEquals(mock_send_task.apply_async.call_count, 2)
-        self.assertEquals(
-            mock_send_task.apply_async.call_args[0], ((new_purchase_order.pk,),)
-        )
+        # mock was not called again
+        self.assertEquals(mock_send_task.apply_async.call_count, 1)
 
     @responses.activate
     @override_settings(ORIAN_MESSAGE_TIMEZONE_NAME='UTC')
@@ -900,8 +893,7 @@ class SendPurchaseOrderToLogisticsCenterTestCase(TestCase):
         self.purchase_order_1.refresh_from_db()
         self.assertEquals(self.purchase_order_1.sent_to_logistics_center_at, None)
 
-        self.purchase_order_1.status = PurchaseOrder.Status.APPROVED.name
-        self.purchase_order_1.save()
+        self.purchase_order_1.approve()
 
         # each mock should have been called once
         self.assertEquals(len(supplier_api_mock.calls), 1)
@@ -921,6 +913,7 @@ class SendPurchaseOrderToLogisticsCenterTestCase(TestCase):
     ORIAN_BASE_URL='https://test.local',
     ORIAN_API_TOKEN='1234',
     ORIAN_CONSIGNEE='AAA',
+    ACTIVE_LOGISTICS_CENTER=LogisticsCenterEnum.ORIAN,
 )
 class SendOrderToLogisticsCenterTestCase(TestCase):
     def setUp(self):
@@ -1152,7 +1145,9 @@ class SendOrderToLogisticsCenterTestCase(TestCase):
         )
 
         with self.assertRaises(Retry):
-            send_order_to_logistics_center.apply_async((self.order.pk,))
+            send_order_to_logistics_center.apply_async(
+                (self.order.pk, LogisticsCenterEnum.ORIAN)
+            )
 
     @responses.activate
     def test_task_add_or_update_outbound_failure(self):
@@ -1182,7 +1177,9 @@ class SendOrderToLogisticsCenterTestCase(TestCase):
         )
 
         with self.assertRaises(Retry):
-            send_order_to_logistics_center.apply_async((self.order.pk,))
+            send_order_to_logistics_center.apply_async(
+                (self.order.pk, LogisticsCenterEnum.ORIAN)
+            )
 
     @responses.activate
     @override_settings(ORIAN_MESSAGE_TIMEZONE_NAME='UTC')
@@ -1216,10 +1213,12 @@ class SendOrderToLogisticsCenterTestCase(TestCase):
         self.order.refresh_from_db()
         self.assertEquals(self.order.status, Order.OrderStatusEnum.PENDING.name)
 
-        send_order_to_logistics_center.apply_async((self.order.pk,))
+        send_order_to_logistics_center.apply_async(
+            (self.order.pk, LogisticsCenterEnum.ORIAN)
+        )
 
         # each mock should have been called once
-        self.assertEquals(len(dummy_company_api_mock.calls), 0)
+        self.assertEquals(len(dummy_company_api_mock.calls), 1)
         self.assertEquals(len(outbound_api_mock.calls), 1)
 
         # the status field was set to sent to logistics center
@@ -1261,7 +1260,9 @@ class SendOrderToLogisticsCenterTestCase(TestCase):
         self.order_2.refresh_from_db()
         self.assertEquals(self.order_2.status, Order.OrderStatusEnum.PENDING.name)
 
-        send_order_to_logistics_center.apply_async((self.order_2.pk,))
+        send_order_to_logistics_center.apply_async(
+            (self.order_2.pk, LogisticsCenterEnum.ORIAN)
+        )
 
         # mocks should not have been called since no order product should be
         # sent to the logistics provider
@@ -1280,10 +1281,12 @@ class SendOrderToLogisticsCenterTestCase(TestCase):
         )
         self.order_2.refresh_from_db()
 
-        send_order_to_logistics_center.apply_async((self.order_2.pk,))
+        send_order_to_logistics_center.apply_async(
+            (self.order_2.pk, LogisticsCenterEnum.ORIAN)
+        )
 
         # each mock should have been called once now
-        self.assertEquals(len(dummy_company_api_mock.calls), 0)
+        self.assertEquals(len(dummy_company_api_mock.calls), 1)
         self.assertEquals(len(outbound_api_mock.calls), 1)
 
         # the status field was set to sent to logistics center
@@ -1333,10 +1336,12 @@ class SendOrderToLogisticsCenterTestCase(TestCase):
         self.order_3.refresh_from_db()
         self.assertEquals(self.order_3.status, Order.OrderStatusEnum.PENDING.name)
 
-        send_order_to_logistics_center.apply_async((self.order_3.pk,))
+        send_order_to_logistics_center.apply_async(
+            (self.order_3.pk, LogisticsCenterEnum.ORIAN)
+        )
 
         # each mock should have been called once
-        self.assertEquals(len(dummy_company_api_mock.calls), 0)
+        self.assertEquals(len(dummy_company_api_mock.calls), 1)
         self.assertEquals(len(outbound_api_mock.calls), 1)
 
         # the status field was set to sent to logistics center
@@ -1397,7 +1402,9 @@ class SyncProductWithLogisticsCenterTestCase(TestCase):
         )
 
         with self.assertRaises(Retry):
-            sync_product_with_logistics_center.apply_async((self.product_1.pk,))
+            sync_product_with_logistics_center.apply_async(
+                (self.product_1.pk, LogisticsCenterEnum.ORIAN)
+            )
 
     @responses.activate
     @override_settings(ORIAN_MESSAGE_TIMEZONE_NAME='UTC')
@@ -1415,7 +1422,9 @@ class SyncProductWithLogisticsCenterTestCase(TestCase):
             status=200,  # orian responds with status 200 even with errors
         )
 
-        sync_product_with_logistics_center.apply_async((self.product_1.pk,))
+        sync_product_with_logistics_center.apply_async(
+            (self.product_1.pk, LogisticsCenterEnum.ORIAN)
+        )
 
         # each mock should have been called once
         self.assertEquals(len(product_api_mock.calls), 1)
@@ -1904,11 +1913,11 @@ class ProcessLogisticsCenterInboundReceiptMessageTestCase(TestCase):
         self.assertEquals(receipt.receipt_code, 'CODE4')
         self.assertEquals(
             receipt.receipt_start_date,
-            datetime(year=2024, month=8, day=1, hour=12, minute=0, tzinfo=timezone.utc),
+            datetime(year=2024, month=8, day=1, hour=9, minute=0, tzinfo=timezone.utc),
         )
         self.assertEquals(
             receipt.receipt_close_date,
-            datetime(year=2024, month=8, day=1, hour=12, minute=0, tzinfo=timezone.utc),
+            datetime(year=2024, month=8, day=1, hour=9, minute=0, tzinfo=timezone.utc),
         )
 
         # two receipt lines were also created
@@ -1952,11 +1961,11 @@ class ProcessLogisticsCenterInboundReceiptMessageTestCase(TestCase):
         self.assertEquals(receipt.receipt_code, 'CODE4')
         self.assertEquals(
             receipt.receipt_start_date,
-            datetime(year=2024, month=8, day=2, hour=16, minute=0, tzinfo=timezone.utc),
+            datetime(year=2024, month=8, day=2, hour=13, minute=0, tzinfo=timezone.utc),
         )
         self.assertEquals(
             receipt.receipt_close_date,
-            datetime(year=2024, month=8, day=2, hour=16, minute=0, tzinfo=timezone.utc),
+            datetime(year=2024, month=8, day=2, hour=13, minute=0, tzinfo=timezone.utc),
         )
 
         # the two receipt lines were updated
@@ -2229,7 +2238,7 @@ class ProcessLogisticsCenterOrderStatusChangeMessageTestCase(TestCase):
         self.assertEquals(order_status.status, 'PICKED')
         self.assertEquals(
             order_status.status_date_time.strftime('%Y-%m-%d %H:%M:%S'),
-            '2024-08-01 12:00:00',
+            '2024-08-01 09:00:00',
         )
 
         # logistics center status should have been set
@@ -2246,7 +2255,7 @@ class ProcessLogisticsCenterOrderStatusChangeMessageTestCase(TestCase):
         self.assertEquals(order_status.status, 'TRANSPORTED')
         self.assertEquals(
             order_status.status_date_time.strftime('%Y-%m-%d %H:%M:%S'),
-            '2024-08-02 12:00:00',
+            '2024-08-02 09:00:00',
         )
 
         # logistics center status should have been updated since the received
@@ -2264,7 +2273,7 @@ class ProcessLogisticsCenterOrderStatusChangeMessageTestCase(TestCase):
         self.assertEquals(order_status.status, 'RECEIVED')
         self.assertEquals(
             order_status.status_date_time.strftime('%Y-%m-%d %H:%M:%S'),
-            '2024-08-01 06:00:00',
+            '2024-08-01 03:00:00',
         )
 
         # logistics center status should not have been updated since the
@@ -2291,7 +2300,7 @@ class ProcessLogisticsCenterOrderStatusChangeMessageTestCase(TestCase):
         self.assertEquals(order_status.status, 'PICKED')
         self.assertEquals(
             order_status.status_date_time.strftime('%Y-%m-%d %H:%M:%S'),
-            '2024-08-01 12:00:00',
+            '2024-08-01 09:00:00',
         )
 
         # logistics center status should have been set
@@ -2536,7 +2545,7 @@ class ProcessLogisticsCenterShipOrderMessageTestCase(TestCase):
         self.assertEquals(order_status.status, 'SHIPPED')
         self.assertEquals(
             order_status.status_date_time.strftime('%Y-%m-%d %H:%M:%S'),
-            '2024-08-01 12:00:00',
+            '2024-08-01 09:00:00',
         )
 
         # logistics center status should have been set
@@ -2553,7 +2562,7 @@ class ProcessLogisticsCenterShipOrderMessageTestCase(TestCase):
         self.assertEquals(order_status.status, 'SHIPPEDAGAIN')
         self.assertEquals(
             order_status.status_date_time.strftime('%Y-%m-%d %H:%M:%S'),
-            '2024-08-01 06:00:00',
+            '2024-08-01 03:00:00',
         )
 
         # logistics center status should not have been updated since the
@@ -2580,7 +2589,7 @@ class ProcessLogisticsCenterShipOrderMessageTestCase(TestCase):
         self.assertEquals(order_status.status, 'SHIPPED')
         self.assertEquals(
             order_status.status_date_time.strftime('%Y-%m-%d %H:%M:%S'),
-            '2024-08-01 12:00:00',
+            '2024-08-01 09:00:00',
         )
 
         # logistics center status should have been set
@@ -2647,7 +2656,7 @@ class ProcessLogisticsCenterSnapshotTestCase(TestCase):
     def test_snapshot_file_not_found(self, mock_exists):
         mock_exists.return_value = False
 
-        process_result = process_logistics_center_snapshot.apply_async(
+        process_result = process_logistics_center_snapshot_file.apply_async(
             (
                 LogisticsCenterEnum.ORIAN.name,
                 'non_existing_path.xml',
@@ -2667,7 +2676,7 @@ class ProcessLogisticsCenterSnapshotTestCase(TestCase):
         mock_exists.return_value = True
         mock_open.return_value = BytesIO(self.logistics_center_snapshot_no_lines)
 
-        process_result = process_logistics_center_snapshot.apply_async(
+        process_result = process_logistics_center_snapshot_file.apply_async(
             (
                 LogisticsCenterEnum.ORIAN.name,
                 'no_lines_path.xml',
@@ -2694,7 +2703,7 @@ class ProcessLogisticsCenterSnapshotTestCase(TestCase):
         mock_exists.return_value = True
         mock_open.return_value = BytesIO(self.logistics_center_snapshot_single_line)
 
-        process_result = process_logistics_center_snapshot.apply_async(
+        process_result = process_logistics_center_snapshot_file.apply_async(
             (
                 LogisticsCenterEnum.ORIAN.name,
                 'single_line_path.xml',
@@ -2729,7 +2738,7 @@ class ProcessLogisticsCenterSnapshotTestCase(TestCase):
         mock_exists.return_value = True
         mock_open.return_value = BytesIO(self.logistics_center_snapshot_multi_line)
 
-        process_result = process_logistics_center_snapshot.apply_async(
+        process_result = process_logistics_center_snapshot_file.apply_async(
             (
                 LogisticsCenterEnum.ORIAN.name,
                 'multi_line_path.xml',
@@ -2773,7 +2782,7 @@ class ProcessLogisticsCenterSnapshotTestCase(TestCase):
         mock_open.return_value = BytesIO(self.logistics_center_snapshot_updates_1)
 
         first_snapshot_date_time = datetime.now()
-        process_result = process_logistics_center_snapshot.apply_async(
+        process_result = process_logistics_center_snapshot_file.apply_async(
             (
                 LogisticsCenterEnum.ORIAN.name,
                 'updates_1_path.xml',
@@ -2809,7 +2818,7 @@ class ProcessLogisticsCenterSnapshotTestCase(TestCase):
         mock_open.return_value = BytesIO(self.logistics_center_snapshot_updates_2)
 
         # process the second snapshot
-        process_result = process_logistics_center_snapshot.apply_async(
+        process_result = process_logistics_center_snapshot_file.apply_async(
             (
                 LogisticsCenterEnum.ORIAN.name,
                 'updates_2_path.xml',
@@ -2852,7 +2861,7 @@ class ProcessLogisticsCenterSnapshotTestCase(TestCase):
 
         # process the third snapshot - which has an earlier date time than the
         # previously-processed snapshots
-        process_result = process_logistics_center_snapshot.apply_async(
+        process_result = process_logistics_center_snapshot_file.apply_async(
             (
                 LogisticsCenterEnum.ORIAN.name,
                 'updates_3_path.xml',
@@ -2906,7 +2915,7 @@ class ProcessLogisticsCenterSnapshotTestCase(TestCase):
 
         # process the first snapshot - data should be updated and new stock
         # records should not be created
-        process_result = process_logistics_center_snapshot.apply_async(
+        process_result = process_logistics_center_snapshot_file.apply_async(
             (
                 LogisticsCenterEnum.ORIAN.name,
                 'updates_1_path.xml',

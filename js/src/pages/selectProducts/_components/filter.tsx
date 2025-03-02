@@ -1,14 +1,79 @@
-import { useCallback, useEffect, useState } from 'react';
+import Tooltip, { TooltipRef } from 'rc-tooltip';
+import raf from 'rc-util/lib/raf';
+import {
+  ReactElement,
+  useCallback,
+  useEffect,
+  useRef,
+  useMemo,
+  useState,
+} from 'react';
 import { useErrorBoundary } from 'react-error-boundary';
 
+import { useNPConfig } from '@/contexts/npConfig';
 import { getCatgoriesSuppliersTags } from '@/services/api';
+import { extractFromNpConfig } from '@/utils/config';
 
 import Loader from './loader';
 import Options from './options';
 
+import 'rc-slider/assets/index.css';
+import 'rc-tooltip/assets/bootstrap.css';
+
 const emptyOption = [{ id: 0, name: '----' }];
 export type typeEmptyOption = (typeof emptyOption)[0];
 
+const GooglePriceTooltip = (props: {
+  value: number;
+  children: ReactElement;
+  visible: boolean;
+  tipFormatter?: (value: number) => React.ReactNode;
+}) => {
+  const { value, children, visible, ...restProps } = props;
+  const tooltipRef = useRef<TooltipRef>(null);
+  const rafRef = useRef<number | null>(null);
+  const cancelKeepAlign = useCallback(() => {
+    raf.cancel(rafRef.current!);
+  }, []);
+  const keepAlign = useCallback(() => {
+    rafRef.current = raf(() => {
+      tooltipRef.current?.forceAlign();
+    });
+  }, []);
+  useEffect(() => {
+    if (visible) keepAlign();
+    else cancelKeepAlign();
+    return cancelKeepAlign;
+  }, [value, visible, cancelKeepAlign, keepAlign]);
+  return (
+    <Tooltip
+      placement="top"
+      overlay={value}
+      overlayInnerStyle={{ minHeight: 'auto' }}
+      ref={tooltipRef}
+      visible={true}
+      {...restProps}
+    >
+      {children}
+    </Tooltip>
+  );
+};
+
+export const GooglePriceHandle: SliderProps['handleRender'] = (node, props) => (
+  // eslint-disable-next-line react/prop-types
+  <GooglePriceTooltip value={props.value} visible={props.dragging}>
+    {node}
+  </GooglePriceTooltip>
+);
+
+interface Tab {
+  id: number;
+  idx: number;
+  key: number;
+  label: string;
+  budget: number;
+  selectedProductIds?: number[];
+}
 interface Product {
   id: number;
   name: string;
@@ -28,31 +93,43 @@ interface Props {
     priceMax?: number,
     organizationPriceMin?: number,
     organizationPriceMax?: number,
+    profitMin?: number,
+    profitMax?: number,
     brandId?: number,
     categoryId?: number,
     supplierId?: number,
     tagId?: number,
+    employeeGroupId?: number,
+    productKind?: string,
+    quickOfferId?: number,
     query?: string,
     selected?: boolean,
+    googlePriceMin?: number,
+    googlePriceMax?: number,
   ) => void;
   budget: number;
-  numSelected: number;
   selectedProductIds: ProductIds[];
   products: Products[];
   baseSPAAssetsUrl?: string;
   handleRemoveProduct: (id: number) => void;
+  handleSelectAllProducts: (e: React.SyntheticEvent<HTMLButtonElement>) => void;
+  selectedEmpGroups?: Tab[];
+  selectAll?: boolean;
 }
 
 const Filter = ({
   applyFilter,
   budget,
-  numSelected,
   selectedProductIds,
   products,
   baseSPAAssetsUrl,
   handleRemoveProduct,
+  handleSelectAllProducts,
+  selectedEmpGroups,
+  selectAll,
 }: Props) => {
   const { showBoundary } = useErrorBoundary();
+  const { config } = useNPConfig();
 
   const [loading, setLoading] = useState<boolean>(true);
   const [priceMin, setPriceMin] = useState<number | undefined>(undefined);
@@ -63,6 +140,8 @@ const Filter = ({
   const [organizationPriceMax, setOrganizationPriceMax] = useState<
     number | undefined
   >(undefined);
+  const [profitMin, setProfitMin] = useState<number | undefined>(undefined);
+  const [profitMax, setProfitMax] = useState<number | undefined>(undefined);
   const [brands, setBrands] = useState([...emptyOption]);
   const [suppliers, setSuppliers] = useState([...emptyOption]);
   const [categories, setCategories] = useState([...emptyOption]);
@@ -74,6 +153,31 @@ const Filter = ({
   const [query, setQuery] = useState<string | undefined>(undefined);
   const [giftsInBudget, setGiftsInBudget] = useState<boolean>(false);
   const [selectedProducts, setSelectedProducts] = useState<boolean>(false);
+  const [employeeGroups, setEmployeeGroups] = useState([...emptyOption]);
+  const [employeeGroupId, setEmployeeGroupId] = useState<number | undefined>(
+    undefined,
+  );
+  const [productKind, setProductKind] = useState<string | undefined>(undefined);
+  const [quickOfferId, setQuickOfferId] = useState<number | undefined>(
+    undefined,
+  );
+  const [googlePriceMin, setGooglePriceMin] = useState<number | undefined>(
+    undefined,
+  );
+  const [googlePriceMax, setGooglePriceMax] = useState<number | undefined>(
+    undefined,
+  );
+  useEffect(() => {
+    selectedEmpGroups?.forEach((each) => {
+      // Check if selectedProductIds is not empty
+      if (each.selectedProductIds && each.selectedProductIds.length > 0) {
+        setEmployeeGroups((prevGroups) => [
+          ...prevGroups,
+          { id: each.id, name: each.label }, // Add only id and label
+        ]);
+      }
+    });
+  }, [selectedEmpGroups]);
 
   useEffect(() => {
     setLoading(true);
@@ -93,6 +197,14 @@ const Filter = ({
       })
       .catch((err) => showBoundary(err));
   }, [showBoundary]);
+
+  const productKindOptions = [
+    { id: 0, name: '----' },
+    { id: 1, name: 'PHYSICAL' },
+    { id: 2, name: 'MONEY' },
+    { id: 3, name: 'BUNDLE' },
+    { id: 4, name: 'VARIATION' },
+  ];
 
   const onApplyFilter = useCallback(() => {
     let hasError = false;
@@ -117,6 +229,17 @@ const Filter = ({
       hasError = true;
     }
 
+    if (profitMin && profitMin < 0) {
+      alert('Minimum profit should be greater than 0');
+      setProfitMin(undefined);
+      hasError = true;
+    }
+    if (profitMax && profitMax < 0) {
+      alert('Maximum profit should be greater than 0');
+      setProfitMax(undefined);
+      hasError = true;
+    }
+
     if (priceMin && priceMax) {
       if (priceMin > priceMax) {
         alert(`minimum price should be less then ` + priceMax);
@@ -125,6 +248,14 @@ const Filter = ({
       } else if (priceMin > priceMax) {
         alert(`maximum price should be greater then ` + priceMin);
         setPriceMax(undefined);
+        hasError = true;
+      }
+    }
+
+    if (profitMin && profitMax) {
+      if (profitMin > profitMax) {
+        alert(`minimum profit should be less then ` + profitMax);
+        setProfitMin(undefined);
         hasError = true;
       }
     }
@@ -147,12 +278,19 @@ const Filter = ({
         priceMax,
         organizationPriceMin,
         organizationPriceMax,
+        profitMin,
+        profitMax,
         brandId,
         supplierId,
         categoryId,
         tagId,
+        employeeGroupId,
+        productKind,
+        quickOfferId,
         query,
         selectedProducts,
+        googlePriceMin,
+        googlePriceMax,
       );
     }
   }, [
@@ -160,14 +298,39 @@ const Filter = ({
     priceMax,
     organizationPriceMin,
     organizationPriceMax,
+    profitMin,
+    profitMax,
     brandId,
     categoryId,
     supplierId,
     tagId,
+    employeeGroupId,
+    productKind,
+    quickOfferId,
     query,
     selectedProducts,
     applyFilter,
+    googlePriceMin,
+    googlePriceMax,
   ]);
+
+  const campaign_type = useMemo(
+    () => extractFromNpConfig(config, 'type'),
+    [config],
+  );
+
+  const quick_offers = useMemo(() => {
+    const campaign_type = extractFromNpConfig(config, 'type');
+    return campaign_type === 'campaign'
+      ? [
+          ...[{ id: 0, name: '----' }],
+          ...(extractFromNpConfig(config, 'quick_offers') as {
+            id: number;
+            name: string;
+          }[]),
+        ]
+      : [];
+  }, [config]);
 
   return loading ? (
     <div className="m-auto">
@@ -240,6 +403,68 @@ const Filter = ({
           />
         </div>
         <label className="block text-sm font-medium leading-6 text-gray-900">
+          Profit Percentage:
+        </label>
+        <div className="flex gap-2 mb-6">
+          <input
+            value={profitMin}
+            onChange={(event) =>
+              setProfitMin(
+                Number(event.target.value) !== 0
+                  ? Number(event.target.value)
+                  : undefined,
+              )
+            }
+            type="number"
+            placeholder="min"
+            className="block w-full rounded-md border-0 px-3.5 py-2 text-gray-900 shadow-sm ring-1 ring-inset ring-gray-300 placeholder:text-gray-400 focus:ring-2 focus:ring-inset focus:ring-indigo-600 sm:text-sm sm:leading-6"
+          />
+          <input
+            value={profitMax}
+            onChange={(event) =>
+              setProfitMax(
+                Number(event.target.value) !== 0
+                  ? Number(event.target.value)
+                  : undefined,
+              )
+            }
+            type="number"
+            placeholder="max"
+            className="block w-full rounded-md border-0 px-3.5 py-2 text-gray-900 shadow-sm ring-1 ring-inset ring-gray-300 placeholder:text-gray-400 focus:ring-2 focus:ring-inset focus:ring-indigo-600 sm:text-sm sm:leading-6"
+          />
+        </div>
+        <label className="block text-sm font-medium leading-6 text-gray-900">
+          Google price:
+        </label>
+        <div className="flex gap-2 mb-6">
+          <input
+            value={googlePriceMin}
+            onChange={(event) =>
+              setGooglePriceMin(
+                Number(event.target.value) !== 0
+                  ? Number(event.target.value)
+                  : undefined,
+              )
+            }
+            type="number"
+            placeholder="min"
+            className="block w-full rounded-md border-0 px-3.5 py-2 text-gray-900 shadow-sm ring-1 ring-inset ring-gray-300 placeholder:text-gray-400 focus:ring-2 focus:ring-inset focus:ring-indigo-600 sm:text-sm sm:leading-6"
+          />
+          <input
+            value={googlePriceMax}
+            onChange={(event) =>
+              setGooglePriceMax(
+                Number(event.target.value) !== 0
+                  ? Number(event.target.value)
+                  : undefined,
+              )
+            }
+            type="number"
+            placeholder="max"
+            className="block w-full rounded-md border-0 px-3.5 py-2 text-gray-900 shadow-sm ring-1 ring-inset ring-gray-300 placeholder:text-gray-400 focus:ring-2 focus:ring-inset focus:ring-indigo-600 sm:text-sm sm:leading-6"
+          />
+        </div>
+        <label className="block text-sm font-medium leading-6 text-gray-900">
           Brand Name:
         </label>
         <Options
@@ -270,6 +495,39 @@ const Filter = ({
           style="mb-6"
           translate={true}
         />
+        {campaign_type === 'campaign' && (
+          <>
+            <label className="block text-sm font-medium leading-6 text-gray-900">
+              Products From QuickOffer:
+            </label>
+            <Options
+              onChangeValue={(val) => setQuickOfferId(val.id || undefined)}
+              data={quick_offers}
+              style="mb-6"
+              translate={true}
+            />
+            <label className="block text-sm font-medium leading-6 text-gray-900">
+              Products From Group:
+            </label>
+            <Options
+              onChangeValue={(val) => setEmployeeGroupId(val.id || undefined)}
+              data={employeeGroups}
+              style="mb-6"
+              translate={true}
+            />
+          </>
+        )}
+        <label className="block text-sm font-medium leading-6 text-gray-900">
+          Product Kind:
+        </label>
+        <Options
+          onChangeValue={(val) =>
+            setProductKind((val.name != '----' ? val.name : '') || undefined)
+          }
+          data={productKindOptions}
+          style="mb-6"
+          translate={true}
+        />
         <label className="block text-sm font-medium leading-6 text-gray-900">
           Search:
         </label>
@@ -292,8 +550,16 @@ const Filter = ({
           />
         </div>
         <div className="flex gap-2 items-center mb-6">
+          <button
+            className="bg-white text-[#417690] h-7 w-full"
+            onClick={handleSelectAllProducts}
+          >
+            {selectAll ? 'Remove All' : 'Select All'}
+          </button>
+        </div>
+        <div className="flex gap-2 items-center mb-6">
           <label className="block text-sm font-medium leading-6 text-gray-900">
-            Selected products ({numSelected}):
+            Selected products ({selectedProductIds.length}):
           </label>
           <input
             type="checkbox"

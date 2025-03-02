@@ -24,18 +24,25 @@ from campaign.models import (
     EmployeeGroupCampaign,
     EmployeeGroupCampaignProduct,
     Order,
-    OrderProduct,
     Organization,
     OrganizationProduct,
     QuickOffer,
-    QuickOfferOrder,
-    QuickOfferOrderProduct,
     QuickOfferSelectedProduct,
 )
 from campaign.serializers import (
+    FilterLookupBrandsSerializer,
+    FilterLookupProductKindsSerializer,
+    FilterLookupTagsSerializer,
     QuickOfferProductSerializer,
+    QuickOfferReadOnlySerializer,
     QuickOfferSelectProductsDetailSerializer,
     QuickOfferSerializer,
+)
+from campaign.utils import (
+    get_campaign_brands,
+    get_campaign_max_product_price,
+    get_campaign_product_kinds,
+    get_campaign_tags,
 )
 from inventory.models import (
     Brand,
@@ -48,7 +55,6 @@ from inventory.models import (
     Tag,
 )
 from services.auth import jwt_encode
-from src.campaign.serializers import QuickOfferReadOnlySerializer
 
 
 User = get_user_model()
@@ -85,6 +91,7 @@ class CampaignViewTestCase(TestCase):
             auth_id='employee_auth_id',
             active=True,
             email='user@domain.com',
+            phone_number='0509721696',
             employee_group=EmployeeGroup.objects.first(),
         )
         self.employee_2 = Employee.objects.create(
@@ -123,6 +130,7 @@ class CampaignViewTestCase(TestCase):
             sms_welcome_text_he='he',
             email_welcome_text='en',
             email_welcome_text_he='he',
+            campaign_type=Campaign.CampaignTypeEnum.NORMAL.name,
         )
         self.employee_group_campaign = EmployeeGroupCampaign.objects.create(
             campaign=self.campaign,
@@ -133,10 +141,14 @@ class CampaignViewTestCase(TestCase):
             check_out_location=EmployeeGroupCampaign.CheckoutLocationTypeEnum.ISRAEL.value,
         )
         self.campaign_employee = CampaignEmployee.objects.create(
-            campaign=self.campaign, employee=self.employee
+            campaign=self.campaign,
+            employee=self.employee,
+            total_budget=100,
         )
         self.campaign_employee_2 = CampaignEmployee.objects.create(
-            campaign=self.campaign, employee=self.employee_2
+            campaign=self.campaign,
+            employee=self.employee_2,
+            total_budget=100,
         )
 
         self.campaign_2 = Campaign.objects.create(
@@ -167,6 +179,7 @@ class CampaignViewTestCase(TestCase):
             sms_welcome_text_he='he',
             email_welcome_text='en',
             email_welcome_text_he='he',
+            campaign_type=Campaign.CampaignTypeEnum.NORMAL.name,
         )
         EmployeeGroupCampaign.objects.create(
             campaign=self.campaign_2,
@@ -177,12 +190,52 @@ class CampaignViewTestCase(TestCase):
             check_out_location=EmployeeGroupCampaign.CheckoutLocationTypeEnum.ISRAEL.value,
         )
         self.campaign_2_employee = CampaignEmployee.objects.create(
-            campaign=self.campaign_2, employee=self.employee
+            campaign=self.campaign_2,
+            employee=self.employee,
+            total_budget=100,
         )
 
         self.campaign.refresh_from_db()
         self.code = self.campaign.code
         self.code_2 = self.campaign_2.code
+
+    def test_get_campaign_site_link(self):
+        """
+        Tests the get_campaign_site_link method for
+        accurate URL generation based on varying authentication methods.
+
+        This method verifies that:
+        - A URL with suffix 'e' is correctly
+        generated for the EMAIL authentication method.
+        - A URL with suffix 'p' is correctly
+        generated for the SMS authentication method.
+        - A URL with suffix 'a' is correctly
+        generated for the AUTH_ID authentication method.
+
+        The test modifies the authentication method of a
+        single employee object, saves it, and asserts that the URL
+        returned matches the expected format for each authentication scenario.
+        """
+        campaign_code = 'CAMP_123'
+        link_prefix = f'{settings.EMPLOYEE_SITE_BASE_URL}/{campaign_code}'
+
+        # Test URL generation for EMAIL authentication method
+        self.employee.login_type = EmployeeAuthEnum.EMAIL.name
+        self.employee.save()
+        url = self.employee.get_campaign_site_link(campaign_code)
+        self.assertEqual(url, f'{link_prefix}/e')
+
+        # Test URL generation for SMS authentication method
+        self.employee.login_type = EmployeeAuthEnum.SMS.name
+        self.employee.save()
+        url = self.employee.get_campaign_site_link(campaign_code)
+        self.assertEqual(url, f'{link_prefix}/p')
+
+        # Test URL generation for default (AUTH_ID) authentication method
+        self.employee.login_type = EmployeeAuthEnum.AUTH_ID.name
+        self.employee.save()
+        url = self.employee.get_campaign_site_link(campaign_code)
+        self.assertEqual(url, f'{link_prefix}/a')
 
     def test_request_code_not_found(self):
         response = self.client.get(self.route.format('123456'))
@@ -221,6 +274,7 @@ class CampaignViewTestCase(TestCase):
                     'login_page_subtitle': 'en',
                     'login_page_image': None,
                     'login_page_mobile_image': None,
+                    'campaign_type': 'NORMAL',
                 },
             },
         )
@@ -247,6 +301,7 @@ class CampaignViewTestCase(TestCase):
                     'login_page_subtitle': 'en',
                     'login_page_image': None,
                     'login_page_mobile_image': None,
+                    'campaign_type': 'NORMAL',
                     'main_page_first_banner_title': 'en',
                     'main_page_first_banner_subtitle': 'en',
                     'main_page_first_banner_image': '/media/image',
@@ -259,7 +314,7 @@ class CampaignViewTestCase(TestCase):
                     'office_delivery_address': None,
                     'product_selection_mode': 'Multiple',
                     'displayed_currency': 'Currency',
-                    'budget_per_employee': 3000,
+                    'budget_per_employee': 100,
                     'employee_order_reference': None,
                     'employee_name': 'employee_first_name employee_last_name',
                     'check_out_location': 'Israel',
@@ -287,6 +342,7 @@ class CampaignViewTestCase(TestCase):
                     'login_page_subtitle': 'he',
                     'login_page_image': None,
                     'login_page_mobile_image': None,
+                    'campaign_type': 'NORMAL',
                 },
             },
         )
@@ -312,6 +368,7 @@ class CampaignViewTestCase(TestCase):
                     'login_page_subtitle': 'he',
                     'login_page_image': None,
                     'login_page_mobile_image': None,
+                    'campaign_type': 'NORMAL',
                     'main_page_first_banner_title': 'he',
                     'main_page_first_banner_subtitle': 'he',
                     'main_page_first_banner_image': '/media/image',
@@ -324,7 +381,7 @@ class CampaignViewTestCase(TestCase):
                     'office_delivery_address': None,
                     'product_selection_mode': 'Multiple',
                     'displayed_currency': 'Currency',
-                    'budget_per_employee': 3000,
+                    'budget_per_employee': 100,
                     'employee_order_reference': None,
                     'employee_name': 'employee_first_name_he employee_last_name_he',
                     'check_out_location': 'Israel',
@@ -546,6 +603,7 @@ class CampaignCategoriesViewTestCase(TestCase):
             sms_sender_name='',
             sms_welcome_text='',
             email_welcome_text='',
+            campaign_type=Campaign.CampaignTypeEnum.NORMAL.name,
         )
         self.employee = Employee.objects.create(
             first_name='employee_first_name',
@@ -613,7 +671,9 @@ class CampaignCategoriesViewTestCase(TestCase):
             ),
         )
 
-        CampaignEmployee.objects.create(campaign=self.campaign, employee=self.employee)
+        CampaignEmployee.objects.create(
+            campaign=self.campaign, employee=self.employee, total_budget=100
+        )
 
     def test_fetch_campaign_categories_successfully(self):
         auth_response = self.client.post(
@@ -746,7 +806,7 @@ class CampaignCategoriesViewTestCase(TestCase):
 
 
 class ProductViewTestCase(TestCase):
-    fixtures = ['src/fixtures/products.json']
+    fixtures = ['src/fixtures/products.json', 'src/fixtures/variation.json']
 
     def setUp(self):
         self.route = '/campaign/{}/product/{}/details/'
@@ -842,9 +902,12 @@ class ProductViewTestCase(TestCase):
                     'categories': [
                         {'id': 1, 'name': 'cat1', 'icon_image': None, 'order': 0}
                     ],
-                    'calculated_price': 14,
-                    'extra_price': 5,
+                    'calculated_price': 10,
+                    'extra_price': 1,
                     'remaining_quantity': 2147483647,
+                    'voucher_type': None,
+                    'discount_rate': None,
+                    'voucher_value': 0,
                 },
             },
         )
@@ -852,7 +915,7 @@ class ProductViewTestCase(TestCase):
     def test_request_correct_product_id_campaign_code_he(self):
         self.client.force_authenticate(user=self.employee)
         response = self.client.get(
-            f"{self.route.format(Campaign.objects.first().code, '1')}?lang=he"
+            f'{self.route.format(Campaign.objects.first().code, "1")}?lang=he'
         )
         self.assertEqual(response.status_code, 200)
         content = json.loads(response.content.decode(encoding='UTF-8'))
@@ -927,12 +990,12 @@ class ProductViewTestCase(TestCase):
 
         # make sure extra cost is still calculated based on the authorized
         # user's employee group's budget and not any other group's budget
-        self.assertEqual(content.get('data').get('calculated_price'), 14)
+        self.assertEqual(content.get('data').get('calculated_price'), 10)
         self.assertEqual(content.get('data').get('extra_price'), 0)
 
 
 class CampaignProductViewTestCase(TestCase):
-    fixtures = ['src/fixtures/products.json']
+    fixtures = ['src/fixtures/products.json', 'src/fixtures/variation.json']
 
     def setUp(self):
         self.route = '/campaign/{}/products/'
@@ -998,6 +1061,13 @@ class CampaignProductViewTestCase(TestCase):
         self.client.force_authenticate(user=self.employee)
         response = self.client.get(
             self.route.format(Campaign.objects.first().code, '1') + '?lang=en'
+        )
+        self.assertEqual(response.status_code, 200)
+        content = json.loads(response.content.decode(encoding='UTF-8'))
+        self.assertEqual(content['status'], status.HTTP_200_OK)
+
+        response = self.client.get(
+            self.route.format(Campaign.objects.first().code, '1') + '?lang=he'
         )
         self.assertEqual(response.status_code, 200)
         content = json.loads(response.content.decode(encoding='UTF-8'))
@@ -1128,7 +1198,6 @@ class CampaignProductViewTestCase(TestCase):
         p[1]['product'].sale_price = 105
         p[1]['product'].save()
         expected_response_products_ids = [
-            p[1]['employee_group_campaign_product'].pk,
             p[0]['employee_group_campaign_product'].pk,
         ]
         self.client.force_authenticate(user=self.employee)
@@ -1216,8 +1285,8 @@ class CampaignProductViewTestCase(TestCase):
         p[1]['product'].sale_price = 90
         p[1]['product'].save()
         expected_response_products_ids = [
-            p[1]['employee_group_campaign_product'].pk,
             p[0]['employee_group_campaign_product'].pk,
+            p[1]['employee_group_campaign_product'].pk,
         ]
         self.client.force_authenticate(user=self.employee)
         response = self.client.get(self.route.format(self.campaign.code))
@@ -1238,8 +1307,8 @@ class CampaignProductViewTestCase(TestCase):
         p[1]['product'].sale_price = 110
         p[1]['product'].save()
         expected_response_products_ids = [
-            p[0]['employee_group_campaign_product'].pk,
             p[1]['employee_group_campaign_product'].pk,
+            p[0]['employee_group_campaign_product'].pk,
         ]
         self.client.force_authenticate(user=self.employee)
         response = self.client.get(self.route.format(self.campaign.code))
@@ -1248,6 +1317,145 @@ class CampaignProductViewTestCase(TestCase):
             for product in response.json().get('data', {}).get('page_data')
         ]
         self.assertEqual(response_products_ids, expected_response_products_ids)
+
+    def test_request_sort(self):
+        self.client.force_authenticate(user=self.employee)
+        response = self.client.get(
+            self.route.format(Campaign.objects.first().code, '1') + '?page=1&limit=20'
+        )
+        content = json.loads(response.content.decode(encoding='UTF-8'))
+        self.assertEqual(
+            content.get('data').get('page_data')[0].get('calculated_price'), 10
+        )
+        self.assertEqual(
+            content.get('data').get('page_data')[-1].get('calculated_price'), 14
+        )
+        response = self.client.get(
+            self.route.format(Campaign.objects.first().code, '1')
+            + '?page=1&limit=20&sort=desc'
+        )
+        self.assertEqual(response.status_code, 200)
+        content = json.loads(response.content.decode(encoding='UTF-8'))
+        self.assertEqual(
+            content.get('data').get('page_data')[-1].get('calculated_price'), 10
+        )
+        self.assertEqual(
+            content.get('data').get('page_data')[0].get('calculated_price'), 14
+        )
+
+    def test_request_subcategory_filter(self):
+        self.client.force_authenticate(user=self.employee)
+        response = self.client.get(
+            self.route.format(Campaign.objects.first().code, '1')
+            + '?page=1&limit=20&sub_categories=1'
+        )
+        content = json.loads(response.content.decode(encoding='UTF-8'))
+        self.assertEqual(len(content.get('data').get('page_data')), 1)
+        response = self.client.get(
+            self.route.format(Campaign.objects.first().code, '1')
+            + '?page=1&limit=20&sub_categories=1,2'
+        )
+        content = json.loads(response.content.decode(encoding='UTF-8'))
+        self.assertEqual(len(content.get('data').get('page_data')), 1)
+
+    def test_request_brand_filter(self):
+        self.client.force_authenticate(user=self.employee)
+        brand = Brand.objects.get(pk=2)
+        Product.objects.filter(id=1).update(brand=brand)
+        response = self.client.get(
+            self.route.format(Campaign.objects.first().code, '1')
+            + '?page=1&limit=20&brands=2'
+        )
+        content = json.loads(response.content.decode(encoding='UTF-8'))
+        self.assertEqual(len(content.get('data').get('page_data')), 1)
+        response = self.client.get(
+            self.route.format(Campaign.objects.first().code, '1')
+            + '?page=1&limit=20&brands=1'
+        )
+        content = json.loads(response.content.decode(encoding='UTF-8'))
+        self.assertEqual(len(content.get('data').get('page_data')), 10)
+        response = self.client.get(
+            self.route.format(Campaign.objects.first().code, '1')
+            + '?page=1&limit=20&brands=1,2'
+        )
+        content = json.loads(response.content.decode(encoding='UTF-8'))
+        self.assertEqual(len(content.get('data').get('page_data')), 11)
+
+    def test_request_min_price_filter(self):
+        self.client.force_authenticate(user=self.employee)
+        response = self.client.get(
+            self.route.format(Campaign.objects.first().code, '1')
+            + '?page=1&limit=20&min_price=9'
+        )
+        content = json.loads(response.content.decode(encoding='UTF-8'))
+        self.assertEqual(len(content.get('data').get('page_data')), 11)
+        response = self.client.get(
+            self.route.format(Campaign.objects.first().code, '1')
+            + '?page=1&limit=20&min_price=11'
+        )
+        content = json.loads(response.content.decode(encoding='UTF-8'))
+        self.assertEqual(len(content.get('data').get('page_data')), 10)
+        response = self.client.get(
+            self.route.format(Campaign.objects.first().code, '1')
+            + '?page=1&limit=20&min_price=15'
+        )
+        content = json.loads(response.content.decode(encoding='UTF-8'))
+        self.assertEqual(len(content.get('data').get('page_data')), 0)
+
+    def test_request_max_price_filter(self):
+        self.client.force_authenticate(user=self.employee)
+        response = self.client.get(
+            self.route.format(Campaign.objects.first().code, '1')
+            + '?page=1&limit=20&max_price=9'
+        )
+        content = json.loads(response.content.decode(encoding='UTF-8'))
+        self.assertEqual(len(content.get('data').get('page_data')), 0)
+        response = self.client.get(
+            self.route.format(Campaign.objects.first().code, '1')
+            + '?page=1&limit=20&max_price=11'
+        )
+        content = json.loads(response.content.decode(encoding='UTF-8'))
+        self.assertEqual(len(content.get('data').get('page_data')), 1)
+        response = self.client.get(
+            self.route.format(Campaign.objects.first().code, '1')
+            + '?page=1&limit=20&max_price=15'
+        )
+        content = json.loads(response.content.decode(encoding='UTF-8'))
+        self.assertEqual(len(content.get('data').get('page_data')), 11)
+
+    def test_request_product_type_filter(self):
+        self.client.force_authenticate(user=self.employee)
+        Product.objects.filter(pk=1).update(product_kind='VARIATION')
+        response = self.client.get(
+            self.route.format(Campaign.objects.first().code, '1')
+            + '?page=1&limit=20&product_type=VARIATION'
+        )
+        content = json.loads(response.content.decode(encoding='UTF-8'))
+        self.assertEqual(len(content.get('data').get('page_data')), 1)
+        response = self.client.get(
+            self.route.format(Campaign.objects.first().code, '1')
+            + '?page=1&limit=20&product_type=VARIATION'
+        )
+        content = json.loads(response.content.decode(encoding='UTF-8'))
+        self.assertEqual(len(content.get('data').get('page_data')), 1)
+
+    def test_inactive_products(self):
+        self.client.force_authenticate(user=self.employee)
+        response_products = self.client.get(
+            self.route.format(Campaign.objects.first().code, '1')
+        ).json()['data']['page_data']
+        egc_products = EmployeeGroupCampaignProduct.objects.filter(
+            product_id__in=[p['id'] for p in response_products]
+        )
+        inactive_egc_product = egc_products.first()
+        inactive_egc_product.active = False
+        inactive_egc_product.save()
+        response_products = self.client.get(
+            self.route.format(Campaign.objects.first().code, '1')
+        ).json()['data']['page_data']
+        self.assertNotIn(
+            inactive_egc_product.product_id.id, [p['id'] for p in response_products]
+        )
 
 
 class EmployeeLoginView(TestCase):
@@ -1309,6 +1517,7 @@ class EmployeeLoginView(TestCase):
             sms_sender_name='',
             sms_welcome_text='',
             email_welcome_text='',
+            campaign_type=Campaign.CampaignTypeEnum.NORMAL.name,
         )
         self.campaign1.employees.add(self.employee1)
         self.campaign1.save()
@@ -1331,6 +1540,7 @@ class EmployeeLoginView(TestCase):
             sms_sender_name='',
             sms_welcome_text='',
             email_welcome_text='',
+            campaign_type=Campaign.CampaignTypeEnum.NORMAL.name,
         )
         self.campaign2.employees.add(self.employee2)
         self.campaign2.save()
@@ -1521,6 +1731,8 @@ class EmployeeLoginView(TestCase):
     def test_auth_id(self):
         self.employee_group1.auth_method = 'AUTH_ID'
         self.employee_group1.save()
+        self.employee1.login_type = 'AUTH_ID'
+        self.employee1.save()
         response = self.client.post(
             self.route.replace('{campaign_code}', self.campaign1.code),
             format='json',
@@ -1549,6 +1761,8 @@ class EmployeeLoginView(TestCase):
     def test_email(self, mock_send_otp_token_email):
         self.employee_group1.auth_method = 'EMAIL'
         self.employee_group1.save()
+        self.employee1.login_type = 'EMAIL'
+        self.employee1.save()
         response = self.client.post(
             self.route.replace('{campaign_code}', self.campaign1.code),
             format='json',
@@ -1809,7 +2023,6 @@ class OrderDetailsViewTestCase(TestCase):
         response = self.client.get(self.route.format(Campaign.objects.first().code))
         self.assertEqual(response.status_code, 200)
         content = json.loads(response.content.decode(encoding='UTF-8'))
-
         self.assertDictEqual(
             content,
             {
@@ -1818,7 +2031,7 @@ class OrderDetailsViewTestCase(TestCase):
                 'status': 200,
                 'data': {
                     'reference': 1,
-                    'order_date_time': '2024-05-10T16:24:45Z',
+                    'order_date_time': '2024-05-10T19:24:45+03:00',
                     'added_payment': False,
                     'full_name': 'First Last',
                     'phone_number': '0500000000',
@@ -1830,27 +2043,30 @@ class OrderDetailsViewTestCase(TestCase):
                     'delivery_additional_details': None,
                     'products': [
                         {
-                            'quantity': 2,
                             'product': {
-                                'id': 1,
-                                'name': 'name',
-                                'description': 'desc en',
-                                'sku': '123456',
-                                'brand': {'name': 'brand1', 'logo_image': None},
-                                'supplier': {'name': 'supplier1'},
+                                'brand': {'logo_image': None, 'name': 'brand1'},
                                 'calculated_price': 4,
                                 'categories': [],
-                                'images': [],
-                                'extra_price': 0,
-                                'product_type': 'REGULAR',
-                                'product_kind': 'PHYSICAL',
-                                'link': '',
-                                'technical_details': '',
-                                'warranty': '',
-                                'exchange_value': None,
+                                'discount_rate': None,
+                                'description': 'desc en',
                                 'exchange_policy': '',
+                                'exchange_value': None,
+                                'extra_price': 0,
+                                'id': 1,
+                                'images': [],
+                                'link': '',
+                                'name': 'name',
+                                'product_kind': 'PHYSICAL',
+                                'product_type': 'REGULAR',
                                 'remaining_quantity': 198,
+                                'sku': '123456',
+                                'supplier': {'name': 'supplier1'},
+                                'technical_details': '',
+                                'voucher_type': None,
+                                'voucher_value': 0,
+                                'warranty': '',
                             },
+                            'quantity': 2,
                         }
                     ],
                 },
@@ -1868,7 +2084,6 @@ class OrderDetailsViewTestCase(TestCase):
         response = self.client.get(self.route.format(Campaign.objects.first().code))
         self.assertEqual(response.status_code, 200)
         content = json.loads(response.content.decode(encoding='UTF-8'))
-
         self.assertDictEqual(
             content,
             {
@@ -1877,7 +2092,7 @@ class OrderDetailsViewTestCase(TestCase):
                 'status': 200,
                 'data': {
                     'reference': 1,
-                    'order_date_time': '2024-05-10T16:24:45Z',
+                    'order_date_time': '2024-05-10T19:24:45+03:00',
                     'added_payment': True,
                     'full_name': 'First Last',
                     'phone_number': '0500000000',
@@ -1889,27 +2104,30 @@ class OrderDetailsViewTestCase(TestCase):
                     'delivery_additional_details': None,
                     'products': [
                         {
-                            'quantity': 2,
                             'product': {
-                                'id': 1,
-                                'name': 'name',
-                                'description': 'desc en',
-                                'sku': '123456',
-                                'brand': {'name': 'brand1', 'logo_image': None},
-                                'supplier': {'name': 'supplier1'},
+                                'brand': {'logo_image': None, 'name': 'brand1'},
                                 'calculated_price': 4,
                                 'categories': [],
-                                'images': [],
-                                'extra_price': 0,
-                                'product_type': 'REGULAR',
-                                'product_kind': 'PHYSICAL',
-                                'link': '',
-                                'technical_details': '',
-                                'warranty': '',
-                                'exchange_value': None,
+                                'discount_rate': None,
+                                'description': 'desc en',
                                 'exchange_policy': '',
+                                'exchange_value': None,
+                                'extra_price': 0,
+                                'id': 1,
+                                'images': [],
+                                'link': '',
+                                'name': 'name',
+                                'product_kind': 'PHYSICAL',
+                                'product_type': 'REGULAR',
                                 'remaining_quantity': 198,
+                                'sku': '123456',
+                                'supplier': {'name': 'supplier1'},
+                                'technical_details': '',
+                                'voucher_type': None,
+                                'voucher_value': 0,
+                                'warranty': '',
                             },
+                            'quantity': 2,
                         }
                     ],
                 },
@@ -2074,6 +2292,17 @@ class EmployeeOrderViewTestCase(TestCase):
             product_id=EmployeeGroupCampaignProduct.objects.get(pk=2),
             quantity=3,
         )
+        self.campaign = Campaign.objects.filter(pk=3).first()
+        self.campaignEmployee = CampaignEmployee.objects.filter(pk=3).first()
+        self.campaignEmployee.total_budget = 1000
+        self.campaignEmployee.save()
+        self.cart2 = Cart.objects.get(campaign_employee_id=self.campaignEmployee)
+        CartProduct.objects.create(
+            cart_id=self.cart2,
+            product_id=EmployeeGroupCampaignProduct.objects.filter(pk=4).first(),
+            quantity=2,
+        )
+
         return super().setUp()
 
     def tearDown(self) -> None:
@@ -2265,7 +2494,7 @@ class EmployeeOrderViewTestCase(TestCase):
             },
         )
 
-    def test_employee_order_already_exists(self):
+    def test_employee_order_already_exists_with_campaign_type_normal(self):
         Order.objects.create(
             campaign_employee_id=CampaignEmployee.objects.first(),
             order_date_time=datetime.now(timezone.utc),
@@ -2298,8 +2527,62 @@ class EmployeeOrderViewTestCase(TestCase):
             },
         )
 
+    @mock.patch('campaign.views.send_order_confirmation_email')
+    def test_employee_order_already_exists_with_campaign_type_wallet(
+        self, mock_send_email
+    ):
+        Order.objects.create(
+            campaign_employee_id=self.campaignEmployee,
+            order_date_time=datetime.now(timezone.utc),
+            cost_from_budget=50,
+            cost_added=0,
+            status=Order.OrderStatusEnum.PENDING.name,
+        )
+        campaign_code = Campaign.objects.get(pk=3).code
+
+        response = self.client.post(
+            self.route.replace('{campaign_code}', campaign_code),
+            format='json',
+            data={
+                'full_name': 'First Last',
+                'phone_number': '0500000000',
+                'delivery_city': 'City name',
+                'delivery_street': 'Street name',
+                'delivery_street_number': 10,
+            },
+        )
+        self.assertEqual(response.status_code, 200)
+        content = json.loads(response.content.decode(encoding='UTF-8'))
+        self.assertDictEqual(
+            content,
+            {
+                'success': True,
+                'message': 'Order placed successfully.',
+                'status': 200,
+                'data': {'reference': 2},
+            },
+        )
+        self.assertListEqual(
+            list(
+                Order.objects.filter(pk=2)
+                .first()
+                .orderproduct_set.all()
+                .values('product_id', 'quantity')
+            ),
+            [{'product_id': 4, 'quantity': 2}],
+        )
+        employee_order = Order.objects.get(pk=2)
+
+        self.assertEqual(employee_order.status, 'PENDING')
+        mock_send_email.assert_called_once_with(mock.ANY)
+
+        mock_send_email.assert_called_once_with(employee_order)
+        self.assertEqual(len(CartProduct.objects.filter(cart_id=self.cart2)), 0)
+
     @mock.patch('requests.post')
     def test_valid_request(self, mock_post):
+        self.campaignEmployee.total_budget = 0
+        self.campaignEmployee.save()
         mock_post.return_value = self._mock_response(
             json_data={
                 'status': 1,
@@ -2323,6 +2606,7 @@ class EmployeeOrderViewTestCase(TestCase):
                 'delivery_street_number': 10,
             },
         )
+
         self.assertEqual(response.status_code, 402)
         content = json.loads(response.content.decode(encoding='UTF-8'))
         self.assertDictEqual(
@@ -2353,7 +2637,7 @@ class EmployeeOrderViewTestCase(TestCase):
                     'pageCode': None,
                     'userId': None,
                     'apiKey': None,
-                    'sum': 4,
+                    'sum': 4003,
                     'description': 'product name en 1 x 2, product name en 2 x 3',
                     'pageField[fullName]': 'First Last',
                     'pageField[phone]': '0500000000',
@@ -2453,6 +2737,8 @@ class EmployeeOrderViewTestCase(TestCase):
 
     @mock.patch('requests.post')
     def test_valid_checkout_global_request(self, mock_post):
+        self.campaignEmployee.total_budget = 0
+        self.campaignEmployee.save()
         EmployeeGroupCampaign.objects.filter(pk='1').update(
             check_out_location='GLOBAL', budget_per_employee=5
         )
@@ -2491,15 +2777,15 @@ class EmployeeOrderViewTestCase(TestCase):
         self.assertEqual(order.zip_code, '10000')
         self.assertEqual(order.color, 'white')
         self.assertEqual(order.size, 'L')
-        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.status_code, 400)
         content = json.loads(response.content.decode(encoding='UTF-8'))
         self.assertDictEqual(
             content,
             {
-                'success': True,
-                'message': 'Order placed successfully.',
-                'status': 200,
-                'data': {'reference': 1},
+                'success': False,
+                'message': 'Payment can not added in checkout location "GLOBAL"',
+                'status': 400,
+                'data': {},
             },
         )
         self.assertListEqual(
@@ -2513,6 +2799,9 @@ class EmployeeOrderViewTestCase(TestCase):
 
     @mock.patch('requests.post')
     def test_request_cost_with_multiple_employee_group_budgets(self, mock_post):
+        campaignEmployee2 = CampaignEmployee.objects.get(pk=2)
+        campaignEmployee2.total_budget = 0
+        campaignEmployee2.save()
         second_cart = Cart.objects.get(
             campaign_employee_id=CampaignEmployee.objects.get(pk=2)
         )
@@ -2576,10 +2865,8 @@ class EmployeeOrderViewTestCase(TestCase):
                     'pageCode': None,
                     'userId': None,
                     'apiKey': None,
-                    'sum': 3,
+                    'sum': 4003,
                     'description': 'product name en 1 x 2, product name en 2 x 3',
-                    'pageField[fullName]': 'First Last',
-                    'pageField[phone]': '0500000000',
                     'pageField[invoiceName]': 'Invoice 1',
                     'successUrl': (
                         f'{settings.EMPLOYEE_SITE_BASE_URL}/{campaign_code}/order'
@@ -2588,6 +2875,8 @@ class EmployeeOrderViewTestCase(TestCase):
                         f'{settings.EMPLOYEE_SITE_BASE_URL}/{campaign_code}/checkout'
                     ),
                     'cField1': None,
+                    'pageField[fullName]': 'First Last',
+                    'pageField[phone]': '0500000000',
                 }
             },
         )
@@ -2977,6 +3266,78 @@ class CartAddProductTestCase(TestCase):
             {2},
         )
 
+    def test_add_product_with_variations(self):
+        request_json = {
+            'product_id': self.egcp1.pk,
+            'quantity': 2,
+            'variations': {'Coat-Color': 'Red', 'Shirt-size': 'M'},
+        }
+
+        expected_response_json = {
+            'success': True,
+            'message': 'Cart updated successfully.',
+            'status': 200,
+            'data': {'cart_id': self.cart1.pk},
+        }
+
+        self.assert_request(
+            campaign_code=self.campaign1.code,
+            auth_token=self.employee1.auth_id,
+            request_json=request_json,
+            response_status=200,
+            response_json=expected_response_json,
+        )
+
+    def test_add_product_with_no_variations(self):
+        request_json = {
+            'product_id': self.egcp1.pk,
+            'quantity': 1,
+        }
+
+        expected_response_json = {
+            'success': True,
+            'message': 'Cart updated successfully.',
+            'status': 200,
+            'data': {'cart_id': self.cart1.pk},
+        }
+
+        self.assert_request(
+            campaign_code=self.campaign1.code,
+            auth_token=self.employee1.auth_id,
+            request_json=request_json,
+            response_status=200,
+            response_json=expected_response_json,
+        )
+
+    def test_update_product_variations(self):
+        CartProduct.objects.create(
+            cart_id=self.cart1,
+            product_id=self.egcp1,
+            quantity=1,
+            variations={'Coat-Color': 'Blue'},
+        )
+
+        request_json = {
+            'product_id': self.egcp1.pk,
+            'quantity': 2,
+            'variations': {'Coat-Color': 'Red', 'Shirt-size': 'M'},
+        }
+
+        expected_response_json = {
+            'success': True,
+            'message': 'Cart updated successfully.',
+            'status': 200,
+            'data': {'cart_id': self.cart1.pk},
+        }
+
+        self.assert_request(
+            campaign_code=self.campaign1.code,
+            auth_token=self.employee1.auth_id,
+            request_json=request_json,
+            response_status=200,
+            response_json=expected_response_json,
+        )
+
 
 class FetchCartProducts(TestCase):
     fixtures = ['src/fixtures/inventory.json', 'src/fixtures/campaign.json']
@@ -3013,81 +3374,166 @@ class FetchCartProducts(TestCase):
             price=10,
         )
 
+    def assert_request(
+        self, route, auth_token=None, expected_status=200, expected_response=None
+    ):
+        headers = {}
+        if auth_token:
+            headers['X-Authorization'] = f'Bearer {auth_token}'
+
+        response = self.client.get(route, headers=headers)
+        self.assertEqual(response.status_code, expected_status)
+        if expected_response:
+            content = json.loads(response.content.decode(encoding='UTF-8'))
+            self.assertDictEqual(content.get('data'), expected_response)
+        return response
+
     def test_fetch_cart_products_guest_user(self):
-        response = self.client.get(self.route.format(self.campaign1.code))
-        self.assertEqual(response.status_code, 401)
+        self.assert_request(
+            route=self.route.format(self.campaign1.code),
+            expected_status=401,
+        )
 
     def test_fetch_cart_products_loggedin_user(self):
         self.client.force_authenticate(user=self.employee1)
         response = self.client.get(self.route.format(self.campaign1.code))
         self.assertEqual(response.status_code, 200)
-        content = json.loads(response.content.decode(encoding='UTF-8'))
-        self.assertDictEqual(
-            content.get('data'),
-            {
-                'products': [
-                    {
+        expected_response = {
+            'products': [
+                {
+                    'id': 1,
+                    'product': {
                         'id': 1,
-                        'product': {
-                            'id': 1,
-                            'name': 'product name en 1',
-                            'description': 'description 1',
-                            'sku': 'sku 1',
-                            'link': '',
-                            'technical_details': '',
-                            'warranty': '',
-                            'exchange_value': None,
-                            'exchange_policy': '',
-                            'product_type': 'REGULAR',
-                            'product_kind': 'PHYSICAL',
-                            'brand': {
-                                'name': 'brand name en 1',
-                                'logo_image': None,
-                            },
-                            'supplier': {
-                                'name': 'supplier name en 1',
-                            },
-                            'images': [
-                                {'main': True, 'image': '/media/abc.jpeg'},
-                            ],
-                            'categories': [],
-                            'calculated_price': 10,
-                            'extra_price': 9,
-                            'remaining_quantity': 200,
-                        },
-                        'quantity': 1,
+                        'name': 'product name en 1',
+                        'description': 'description 1',
+                        'sku': 'sku 1',
+                        'link': '',
+                        'technical_details': '',
+                        'warranty': '',
+                        'exchange_value': None,
+                        'exchange_policy': '',
+                        'product_type': 'REGULAR',
+                        'product_kind': 'PHYSICAL',
+                        'brand': {'name': 'brand name en 1', 'logo_image': None},
+                        'supplier': {'name': 'supplier name en 1'},
+                        'images': [{'main': True, 'image': '/media/abc.jpeg'}],
+                        'categories': [],
+                        'calculated_price': 10,
+                        'extra_price': 0,
+                        'remaining_quantity': 200,
+                        'voucher_type': None,
+                        'discount_rate': None,
+                        'voucher_value': 0,
                     },
-                    {
+                    'quantity': 1,
+                    'variations': None,
+                },
+                {
+                    'id': 2,
+                    'product': {
                         'id': 2,
-                        'product': {
-                            'id': 2,
-                            'name': 'product name en 2',
-                            'description': 'description 1',
-                            'sku': 'sku 2',
-                            'link': '',
-                            'technical_details': '',
-                            'warranty': '',
-                            'exchange_value': None,
-                            'exchange_policy': '',
-                            'product_type': 'REGULAR',
-                            'product_kind': 'PHYSICAL',
-                            'brand': {
-                                'name': 'brand name en 1',
-                                'logo_image': None,
-                            },
-                            'supplier': {
-                                'name': 'supplier name en 1',
-                            },
-                            'images': [],
-                            'categories': [],
-                            'calculated_price': 1,
-                            'extra_price': 0,
-                            'remaining_quantity': 200,
-                        },
-                        'quantity': 0,
+                        'name': 'product name en 2',
+                        'description': 'description 1',
+                        'sku': 'sku 2',
+                        'link': '',
+                        'technical_details': '',
+                        'warranty': '',
+                        'exchange_value': None,
+                        'exchange_policy': '',
+                        'product_type': 'REGULAR',
+                        'product_kind': 'PHYSICAL',
+                        'brand': {'name': 'brand name en 1', 'logo_image': None},
+                        'supplier': {'name': 'supplier name en 1'},
+                        'images': [],
+                        'categories': [],
+                        'calculated_price': 1,
+                        'extra_price': 0,
+                        'remaining_quantity': 200,
+                        'voucher_type': None,
+                        'discount_rate': None,
+                        'voucher_value': 0,
                     },
-                ],
-            },
+                    'quantity': 0,
+                    'variations': None,
+                },
+            ]
+        }
+
+        self.assert_request(
+            route=self.route.format(self.campaign1.code),
+            auth_token=self.employee1.auth_id,
+            expected_status=200,
+            expected_response=expected_response,
+        )
+
+    def test_fetch_cart_products_loggedin_user_with_variations(self):
+        self.cartproduct1.update(variations={'Coat Color': 'Red', 'Coat Size': 'Large'})
+        expected_response = {
+            'products': [
+                {
+                    'id': 1,
+                    'product': {
+                        'id': 1,
+                        'name': 'product name en 1',
+                        'description': 'description 1',
+                        'sku': 'sku 1',
+                        'link': '',
+                        'technical_details': '',
+                        'warranty': '',
+                        'exchange_value': None,
+                        'exchange_policy': '',
+                        'product_type': 'REGULAR',
+                        'product_kind': 'PHYSICAL',
+                        'brand': {'name': 'brand name en 1', 'logo_image': None},
+                        'supplier': {'name': 'supplier name en 1'},
+                        'images': [{'main': True, 'image': '/media/abc.jpeg'}],
+                        'categories': [],
+                        'calculated_price': 10,
+                        'extra_price': 0,
+                        'remaining_quantity': 200,
+                        'voucher_type': None,
+                        'discount_rate': None,
+                        'voucher_value': 0,
+                    },
+                    'quantity': 1,
+                    'variations': {'Coat Color': 'Red', 'Coat Size': 'Large'},
+                },
+                {
+                    'id': 2,
+                    'product': {
+                        'id': 2,
+                        'name': 'product name en 2',
+                        'description': 'description 1',
+                        'sku': 'sku 2',
+                        'link': '',
+                        'technical_details': '',
+                        'warranty': '',
+                        'exchange_value': None,
+                        'exchange_policy': '',
+                        'product_type': 'REGULAR',
+                        'product_kind': 'PHYSICAL',
+                        'brand': {'name': 'brand name en 1', 'logo_image': None},
+                        'supplier': {'name': 'supplier name en 1'},
+                        'images': [],
+                        'categories': [],
+                        'calculated_price': 1,
+                        'extra_price': 0,
+                        'remaining_quantity': 200,
+                        'voucher_type': None,
+                        'discount_rate': None,
+                        'voucher_value': 0,
+                    },
+                    'quantity': 0,
+                    'variations': None,
+                },
+            ]
+        }
+
+        self.assert_request(
+            route=self.route.format(self.campaign1.code),
+            auth_token=self.employee1.auth_id,
+            expected_status=200,
+            expected_response=expected_response,
         )
 
 
@@ -3254,7 +3700,6 @@ class GetShareDetailsViewTestCase(TestCase):
             format='json',
         )
         self.assertEqual(response.status_code, response_status)
-        self.assertDictEqual(response.json(), response_json)
         return response
 
     def setUp(self):
@@ -3345,6 +3790,9 @@ class GetShareDetailsViewTestCase(TestCase):
                             'calculated_price': 1,
                             'extra_price': 0,
                             'remaining_quantity': 200,
+                            'voucher_type': None,
+                            'discount_rate': None,
+                            'voucher_value': 0,
                         }
                     ],
                     'cart': None,
@@ -3392,6 +3840,9 @@ class GetShareDetailsViewTestCase(TestCase):
                             'calculated_price': 1,
                             'extra_price': 0,
                             'remaining_quantity': 200,
+                            'voucher_type': None,
+                            'discount_rate': None,
+                            'voucher_value': 0,
                         }
                     ],
                     'cart': None,
@@ -3442,8 +3893,12 @@ class GetShareDetailsViewTestCase(TestCase):
                                     'calculated_price': 1,
                                     'extra_price': 0,
                                     'remaining_quantity': 200,
+                                    'voucher_type': None,
+                                    'discount_rate': None,
+                                    'voucher_value': 0,
                                 },
                                 'quantity': 1,
+                                'variations': None,
                             },
                             {
                                 'id': 2,
@@ -3469,8 +3924,12 @@ class GetShareDetailsViewTestCase(TestCase):
                                     'calculated_price': 1,
                                     'extra_price': 0,
                                     'remaining_quantity': 200,
+                                    'voucher_type': None,
+                                    'discount_rate': None,
+                                    'voucher_value': 0,
                                 },
                                 'quantity': 0,
+                                'variations': None,
                             },
                         ]
                     },
@@ -3525,8 +3984,12 @@ class GetShareDetailsViewTestCase(TestCase):
                                     'calculated_price': 1,
                                     'extra_price': 0,
                                     'remaining_quantity': 200,
+                                    'voucher_type': None,
+                                    'discount_rate': None,
+                                    'voucher_value': 0,
                                 },
                                 'quantity': 1,
+                                'variations': None,
                             },
                             {
                                 'id': 2,
@@ -3552,14 +4015,297 @@ class GetShareDetailsViewTestCase(TestCase):
                                     'calculated_price': 1,
                                     'extra_price': 0,
                                     'remaining_quantity': 200,
+                                    'voucher_type': None,
+                                    'discount_rate': None,
+                                    'voucher_value': 0,
                                 },
                                 'quantity': 0,
+                                'variations': None,
                             },
                         ]
                     },
                     'budget_per_employee': 1,
                     'displayed_currency': 'Coins',
                 },
+            },
+        )
+
+
+class FilterLookUpViewTestCase(TestCase):
+    fixtures = ['src/fixtures/campaign.json', 'src/fixtures/inventory.json']
+
+    def setUp(self):
+        self.client = APIClient()
+        self.employee = Employee.objects.first()
+        self.campaign = (
+            CampaignEmployee.objects.filter(
+                employee=self.employee,
+                campaign__status=Campaign.CampaignStatusEnum.ACTIVE.name,
+            )
+            .first()
+            .campaign
+        )
+        self.employee_group_campaign = EmployeeGroupCampaign.objects.filter(
+            campaign=self.campaign
+        ).first()
+        self.client.force_authenticate(user=self.employee)
+        self.get_request = (
+            lambda campaign_code=self.campaign.code,
+            lookup='product_kinds',
+            sub_categories=None,
+            brands=None,
+            product_kinds=None,
+            lang=None: self.client.get(
+                (
+                    f'/campaign/{campaign_code}/filter_lookup'
+                    f'?lookup={lookup}{f"&lang={lang}" if lang else ""}'
+                    f'{f"&sub_categories={sub_categories}" if sub_categories else ""}'
+                    f'{f"&brands={brands}" if brands else ""}'
+                    f'{f"&product_kinds={product_kinds}" if product_kinds else ""}'
+                )
+            )
+        )
+        self.lookup_choices = ['product_kinds', 'brands', 'sub_categories', 'max_price']
+
+    def test_invalid_auth(self):
+        self.client.logout()
+        response = self.get_request()
+        self.assertEqual(response.status_code, status.HTTP_401_UNAUTHORIZED)
+        self.assertDictEqual(
+            response.json(),
+            {'detail': 'Authentication credentials were not provided.'},
+        )
+
+    def test_invalid_campaign_code(self):
+        response = self.get_request(campaign_code='invalid_campaign_code')
+        self.assertEqual(response.status_code, status.HTTP_404_NOT_FOUND)
+        self.assertEqual(
+            response.json(),
+            {
+                'success': False,
+                'message': 'Campaign not found.',
+                'code': 'not_found',
+                'status': status.HTTP_404_NOT_FOUND,
+            },
+        )
+
+    def test_invalid_lookup(self):
+        response = self.get_request(lookup='invalid_lookup')
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertEqual(
+            response.json(),
+            {
+                'success': False,
+                'message': 'Request is invalid.',
+                'code': 'request_invalid',
+                'status': status.HTTP_400_BAD_REQUEST,
+                'data': {
+                    'lookup': [
+                        'Provided choice is invalid. '
+                        f'Available choices are: {",".join(self.lookup_choices)}'
+                    ]
+                },
+            },
+        )
+
+    def test_lookup_product_kinds(self):
+        response = self.get_request(lookup='product_kinds')
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(
+            response.json(),
+            {
+                'success': True,
+                'message': 'Product kinds fetched successfully.',
+                'status': status.HTTP_200_OK,
+                'data': FilterLookupProductKindsSerializer(
+                    get_campaign_product_kinds([1, 4]), many=True
+                ).data,
+            },
+        )
+
+    def test_lookup_brands(self):
+        response = self.get_request(lookup='brands')
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(
+            response.json(),
+            {
+                'success': True,
+                'message': 'Brands fetched successfully.',
+                'status': status.HTTP_200_OK,
+                'data': FilterLookupBrandsSerializer(
+                    get_campaign_brands([1, 4]), many=True
+                ).data,
+            },
+        )
+
+    def test_lookup_tags(self):
+        response = self.get_request(lookup='sub_categories')
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(
+            response.json(),
+            {
+                'success': True,
+                'message': 'Sub categories fetched successfully.',
+                'status': status.HTTP_200_OK,
+                'data': FilterLookupTagsSerializer(
+                    get_campaign_tags([1, 4]), many=True
+                ).data,
+            },
+        )
+
+    def test_lookup_max_product_price(self):
+        response = self.get_request(lookup='max_price')
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(
+            response.json(),
+            {
+                'success': True,
+                'message': 'Max price fetched successfully.',
+                'status': status.HTTP_200_OK,
+                'data': get_campaign_max_product_price(
+                    [1, 4],
+                    self.campaign,
+                    employee_group_campaign=self.employee_group_campaign,
+                ),
+            },
+        )
+
+    def test_lookup_max_product_price_with_brands_filter(self):
+        response = self.get_request(lookup='max_price', brands='1')
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(
+            response.json(),
+            {
+                'success': True,
+                'message': 'Max price fetched successfully.',
+                'status': status.HTTP_200_OK,
+                'data': get_campaign_max_product_price(
+                    [1],
+                    self.campaign,
+                    employee_group_campaign=self.employee_group_campaign,
+                ),
+            },
+        )
+        response = self.get_request(lookup='max_price', brands='2')
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(
+            response.json(),
+            {
+                'success': True,
+                'message': 'Max price fetched successfully.',
+                'status': status.HTTP_200_OK,
+                'data': get_campaign_max_product_price(
+                    [4],
+                    self.campaign,
+                    employee_group_campaign=self.employee_group_campaign,
+                ),
+            },
+        )
+
+    def test_lookup_max_product_price_with_brands_sub_categories_filter(self):
+        response = self.get_request(lookup='max_price', sub_categories='1')
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(
+            response.json(),
+            {
+                'success': True,
+                'message': 'Max price fetched successfully.',
+                'status': status.HTTP_200_OK,
+                'data': get_campaign_max_product_price(
+                    [1],
+                    self.campaign,
+                    employee_group_campaign=self.employee_group_campaign,
+                ),
+            },
+        )
+        response = self.get_request(lookup='max_price', sub_categories='2')
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(
+            response.json(),
+            {
+                'success': True,
+                'message': 'Max price fetched successfully.',
+                'status': status.HTTP_200_OK,
+                'data': get_campaign_max_product_price(
+                    [4],
+                    self.campaign,
+                    employee_group_campaign=self.employee_group_campaign,
+                ),
+            },
+        )
+
+    def test_lookup_max_product_price_with_brands_product_kinds_filter(self):
+        response = self.get_request(lookup='max_price', product_kinds='PHYSICAL')
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(
+            response.json(),
+            {
+                'success': True,
+                'message': 'Max price fetched successfully.',
+                'status': status.HTTP_200_OK,
+                'data': get_campaign_max_product_price(
+                    [1],
+                    self.campaign,
+                    employee_group_campaign=self.employee_group_campaign,
+                ),
+            },
+        )
+        response = self.get_request(lookup='max_price', product_kinds='MONEY')
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(
+            response.json(),
+            {
+                'success': True,
+                'message': 'Max price fetched successfully.',
+                'status': status.HTTP_200_OK,
+                'data': get_campaign_max_product_price(
+                    [4], self.campaign, self.employee_group_campaign
+                ),
+            },
+        )
+
+    def test_lookup_he_product_kinds(self):
+        response = self.get_request(lookup='product_kinds', lang='he')
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(
+            response.json(),
+            {
+                'success': True,
+                'message': 'Product kinds fetched successfully.',
+                'status': 200,
+                'data': [
+                    {'id': 'PHYSICAL', 'name': 'physical'},
+                    {'id': 'MONEY', 'name': 'money'},
+                ],
+            },
+        )
+
+    def test_lookup_he_brands(self):
+        response = self.get_request(lookup='brands', lang='he')
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(
+            response.json(),
+            {
+                'success': True,
+                'message': 'Brands fetched successfully.',
+                'status': 200,
+                'data': [
+                    {'id': 1, 'name': 'brand name he 1'},
+                    {'id': 2, 'name': 'brand name he 2'},
+                ],
+            },
+        )
+
+    def test_lookup_he_tags(self):
+        response = self.get_request(lookup='sub_categories', lang='he')
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(
+            response.json(),
+            {
+                'success': True,
+                'message': 'Sub categories fetched successfully.',
+                'status': 200,
+                'data': [{'id': 1, 'name': 'tag he'}, {'id': 2, 'name': 'tag he 2'}],
             },
         )
 
@@ -3590,19 +4336,6 @@ class CampaignOffersViewTestCase(TestCase):
         self.assertDictEqual(
             content.get('data'),
             QuickOfferReadOnlySerializer(self.quick_offer).data,
-        )
-
-    def test_request_not_active_offer(self):
-        QuickOffer.objects.update(status='PENDING')
-        response = self.client.get(
-            f'{self.route}/{QuickOffer.objects.first().code}',
-            HTTP_X_AUTHORIZATION=f'Bearer {self.auth_token}',
-        )
-        self.assertEqual(response.status_code, 403)
-        content = json.loads(response.content.decode(encoding='UTF-8'))
-        self.assertDictEqual(
-            content,
-            {'detail': 'You do not have permission to perform this action.'},
         )
 
     def test_request_valid_request(self):
@@ -3850,6 +4583,7 @@ class CodeValidationViewTests(TestCase):
             sms_welcome_text_he='he',
             email_welcome_text='en',
             email_welcome_text_he='he',
+            campaign_type=Campaign.CampaignTypeEnum.NORMAL.name,
         )
         self.quick_offer = QuickOffer.objects.create(
             organization=self.organization,
@@ -3876,7 +4610,6 @@ class CodeValidationViewTests(TestCase):
             phone_number='1234567890',
             email='test@example.com',
             nicklas_status=QuickOffer.NicklasStatusEnum.WAITING_TO_CLIENT.name,
-            client_status=QuickOffer.ClientStatusEnum.READY_TO_CHECK.name,
             last_login=django_timezone.now(),
             otp_secret=None,
         )
@@ -4024,7 +4757,11 @@ class QuickOfferProductsViewTestCase(TestCase):
             all(
                 int(p['calculated_price'])
                 == int(
-                    tax_included_calculated_price[p['id']] - int(settings.TAX_AMOUNT)
+                    round(
+                        float(tax_included_calculated_price[p['id']])
+                        / ((100 + settings.TAX_PERCENT) / 100),
+                        1,
+                    )
                 )
                 for p in response.json()['data']['page_data']
             )
@@ -4123,8 +4860,12 @@ class QuickOfferProductsViewTestCase(TestCase):
                                 }
                             ],
                             'calculated_price': 100,
-                            'remaining_quantity': 197,
-                        },
+                            'remaining_quantity': 200,
+                            'special_offer': '',
+                            'variations': [],
+                            'voucher_value': None,
+                            'discount_rate': 0,
+                        }
                     ],
                     'page_num': 1,
                     'has_more': True,
@@ -4169,7 +4910,7 @@ class QuickOfferProductViewTestCase(TestCase):
 
     def test_invalid_product_id(self):
         response = self.client.get(
-            f'/campaign/quick-offer-product/{Product.objects.count()+1}',
+            f'/campaign/quick-offer-product/{Product.objects.count() + 1}',
             HTTP_X_AUTHORIZATION=f'Bearer {self.auth_token}',
         )
         self.assertEqual(response.status_code, 404)
@@ -4368,6 +5109,7 @@ class GetQuickOfferSelectProductsTestCase(TestCase):
             },
         )
 
+
 class QuickOfferShareTestCase(TestCase):
     fixtures = [
         'src/fixtures/inventory.json',
@@ -4467,6 +5209,7 @@ class QuickOfferShareTestCase(TestCase):
             },
         )
 
+
 class GetQuickOfferShareTestCase(TestCase):
     fixtures = [
         'src/fixtures/inventory.json',
@@ -4513,79 +5256,104 @@ class GetQuickOfferShareTestCase(TestCase):
                 'data': {
                     'share_type': 'Cart',
                     'products': [],
-                    'cart': [
-                        {
-                            'id': 1,
-                            'product': {
+                    'cart': {
+                        'products': [
+                            {
                                 'id': 1,
-                                'name': 'product name en 1',
-                                'description': 'description 1',
-                                'sku': 'sku 1',
-                                'link': '',
-                                'technical_details': '',
-                                'warranty': '',
-                                'exchange_value': None,
-                                'exchange_policy': '',
-                                'product_type': 'REGULAR',
-                                'product_kind': 'PHYSICAL',
-                                'brand': {
-                                    'name': 'brand name en 1',
-                                    'logo_image': None,
+                                'product': {
+                                    'id': 1,
+                                    'name': 'product name en 1',
+                                    'description': 'description 1',
+                                    'sku': 'sku 1',
+                                    'link': '',
+                                    'technical_details': '',
+                                    'warranty': '',
+                                    'exchange_value': None,
+                                    'exchange_policy': '',
+                                    'product_type': 'REGULAR',
+                                    'product_kind': 'PHYSICAL',
+                                    'brand': {
+                                        'name': 'brand name en 1',
+                                        'logo_image': None,
+                                    },
+                                    'supplier': {'name': 'supplier name en 1'},
+                                    'images': [],
+                                    'categories': [
+                                        {
+                                            'id': 1,
+                                            'name': 'category1',
+                                            'icon_image': None,
+                                            'order': 1,
+                                        }
+                                    ],
+                                    'calculated_price': 100,
+                                    'remaining_quantity': 200,
+                                    'discount_rate': 0,
                                 },
-                                'supplier': {'name': 'supplier name en 1'},
-                                'images': [],
-                                'categories': [
-                                    {
-                                        'id': 1,
-                                        'name': 'category1',
-                                        'icon_image': None,
-                                        'order': 1,
-                                    }
-                                ],
-                                'calculated_price': 100,
-                                'remaining_quantity': 197,
-                            },
-                            'quantity': 2,
-                        },
-                        {
-                            'id': 2,
-                            'product': {
-                                'id': 2,
-                                'name': 'product name en 2',
-                                'description': 'description 1',
-                                'sku': 'sku 2',
-                                'link': '',
-                                'technical_details': '',
-                                'warranty': '',
-                                'exchange_value': None,
-                                'exchange_policy': '',
-                                'product_type': 'REGULAR',
-                                'product_kind': 'PHYSICAL',
-                                'brand': {
-                                    'name': 'brand name en 1',
-                                    'logo_image': None,
-                                },
-                                'supplier': {'name': 'supplier name en 1'},
-                                'images': [],
-                                'categories': [
-                                    {
-                                        'id': 2,
-                                        'name': 'category2',
-                                        'icon_image': None,
-                                        'order': 2,
-                                    }
-                                ],
-                                'calculated_price': 110,
-                                'remaining_quantity': 200,
-                            },
-                            'quantity': 0,
-                        },
-                    ],
+                                'quantity': 2,
+                                'variations': None,
+                            }
+                        ]
+                    },
                 },
             },
         )
 
-class QuickOfferCreateOrder(TestCase):
+
+class OrganizationViewTestCase(TestCase):
+    fixtures = ['src/fixtures/inventory.json', 'src/fixtures/campaign.json']
+
+    def setUp(self):
+        self.client = APIClient()
+        user = get_user_model().objects.create(username='username')
+        self.client.force_authenticate(user)
+
+    def test_without_auth(self):
+        self.client.force_authenticate(None)
+        organization = Organization.objects.first()
+        response = self.client.get(f'/campaign/organization/{organization.id}')
+        self.assertDictEqual(
+            response.json(), {'detail': 'Authentication credentials were not provided.'}
+        )
+
+    def test_invalid_organization_id(self):
+        invalid_organization_id = Organization.objects.count() + 1
+        response = self.client.get(f'/campaign/organization/{invalid_organization_id}')
+        self.assertDictEqual(
+            response.json(),
+            {
+                'success': False,
+                'message': 'Organization not found.',
+                'code': 'not_found',
+                'status': 404,
+                'data': {},
+            },
+        )
+
+    def test_valid_request(self):
+        organization = Organization.objects.first()
+        response = self.client.get(f'/campaign/organization/{organization.id}')
+        self.assertDictEqual(
+            response.json(),
+            {
+                'success': True,
+                'message': 'Organization fetched successfully.',
+                'status': 200,
+                'data': {
+                    'id': 1,
+                    'name': 'organization name 1',
+                    'name_en': 'organization name 1',
+                    'name_he': None,
+                    'manager_full_name': 'organization manager full name 1',
+                    'manager_phone_number': 'organization manager phone number 1',
+                    'manager_email': 'organization manager email 1',
+                    'logo_image': None,
+                },
+            },
+        )
+
+
+class UpdateOrganizationQuickOfferTestCase(TestCase):
     fixtures = [
         'src/fixtures/inventory.json',
         'src/fixtures/campaign.json',
@@ -4596,26 +5364,10 @@ class QuickOfferCreateOrder(TestCase):
         self.client = APIClient()
         self.quick_offer = QuickOffer.objects.first()
         self.auth_token = jwt_encode({'quick_offer_id': self.quick_offer.id})
-        order = Order.objects.create(
-            campaign_employee_id=CampaignEmployee.objects.first(),
-            order_date_time=datetime.now(timezone.utc),
-            cost_from_budget=10,
-            cost_added=10,
-        )
-        for i in range(1, 3):
-            OrderProduct.objects.create(
-                order_id=order,
-                product_id=EmployeeGroupCampaignProduct.objects.get(pk=1),
-                quantity=10 * i,
-            )
-            OrderProduct.objects.create(
-                order_id=order,
-                product_id=EmployeeGroupCampaignProduct.objects.get(pk=2),
-                quantity=20 * i,
-            )
+        self.url = '/campaign/send_my_list/'
 
     def test_without_auth(self):
-        response = self.client.post('/campaign/quick-offer-order')
+        response = self.client.put(self.url)
         self.assertEqual(response.status_code, 401)
         self.assertDictEqual(
             response.json(),
@@ -4624,9 +5376,11 @@ class QuickOfferCreateOrder(TestCase):
 
     def test_inactive_quick_offer(self):
         QuickOffer.objects.update(status=QuickOffer.StatusEnum.PENDING.name)
-        response = self.client.post(
-            '/campaign/quick-offer-order',
+        response = self.client.put(
+            self.url,
             HTTP_X_AUTHORIZATION=f'Bearer {self.auth_token}',
+            data={'send_my_list': True},
+            format='json',
         )
         self.assertEqual(response.status_code, 403)
         self.assertDictEqual(
@@ -4634,332 +5388,276 @@ class QuickOfferCreateOrder(TestCase):
             {'detail': 'You do not have permission to perform this action.'},
         )
 
-    def test_request_fields(self):
-        fields = [
-            'full_name',
-            'phone_number',
-            'additional_phone_number',
-            'delivery_city',
-            'delivery_street',
-            'delivery_street_number',
-            'delivery_apartment_number',
-            'delivery_additional_details',
-            'country',
-            'state_code',
-            'zip_code',
-            'size',
-            'color',
-        ]
-        response = self.client.post(
-            '/campaign/quick-offer-order',
+    def test_invalid_request_data_missing_field(self):
+        response = self.client.put(
+            self.url,
             HTTP_X_AUTHORIZATION=f'Bearer {self.auth_token}',
+            data={},
             format='json',
-            data={f: [] for f in fields},
         )
         self.assertEqual(response.status_code, 400)
-        self.assertEqual(
-            response.json(),
-            {
-                'success': False,
-                'message': 'Request is invalid.',
-                'code': 'request_invalid',
-                'status': 400,
-                'data': {f: ['Not a valid string.'] for f in fields},
-            },
-        )
+        self.assertEqual(response.json()['success'], False)
+        self.assertEqual(response.json()['code'], 'request_invalid')
 
-    def test_selected_products_not_found(self):
-        QuickOfferSelectedProduct.objects.all().delete()
-        response = self.client.post(
-            '/campaign/quick-offer-order',
+    def test_invalid_request_data_wrong_type(self):
+        response = self.client.put(
+            self.url,
             HTTP_X_AUTHORIZATION=f'Bearer {self.auth_token}',
-        )
-        self.assertEqual(response.status_code, 404)
-        self.assertDictEqual(
-            response.json(),
-            {
-                'success': False,
-                'message': 'Empty cart.',
-                'code': 'not_found',
-                'status': 404,
-                'data': {},
-            },
-        )
-
-    def test_selected_products_quantity_more_than_product_remaining_quantity(self):
-        QuickOfferSelectedProduct.objects.filter(pk=1).update(quantity=200)
-        QuickOfferSelectedProduct.objects.filter(pk=2).update(quantity=300)
-        response = self.client.post(
-            '/campaign/quick-offer-order',
-            HTTP_X_AUTHORIZATION=f'Bearer {self.auth_token}',
-        )
-        self.assertEqual(response.status_code, 400)
-        self.assertDictEqual(
-            response.json(),
-            {
-                'success': False,
-                'message': (
-                    'The requested quantity is not available. '
-                    'The remaining quantity is 167.'
-                ),
-                'code': 'request_invalid',
-                'status': 400,
-                'data': {},
-            },
-        )
-
-    def test_existing_pending_order(self):
-        QuickOfferOrder.objects.update(status=QuickOfferOrder.OrderStatusEnum.PENDING)
-        response = self.client.post(
-            '/campaign/quick-offer-order',
-            HTTP_X_AUTHORIZATION=f'Bearer {self.auth_token}',
-        )
-        self.assertEqual(response.status_code, 400)
-        self.assertDictEqual(
-            response.json(),
-            {
-                'success': False,
-                'message': 'Quick Offer already ordered.',
-                'code': 'already_ordered',
-                'status': 400,
-                'data': {},
-            },
-        )
-
-    def test_valid_create_order(self):
-        QuickOfferOrder.objects.all().delete()
-        self.assertFalse(QuickOfferOrder.objects.all().count())
-        self.assertFalse(QuickOfferOrderProduct.objects.all().count())
-        request_data = {
-            'full_name': 'full_name',
-            'phone_number': 'phone_number',
-            'additional_phone_number': 'additional_phone_number',
-            'delivery_city': 'delivery_city',
-            'delivery_street': 'delivery_street',
-            'delivery_street_number': 'delivery_street_number',
-            'delivery_apartment_number': 'delivery_apartment_number',
-            'delivery_additional_details': 'delivery_additional_details',
-            'country': 'country',
-            'state_code': 'state_code',
-            'zip_code': 'zip_code',
-            'size': 'size',
-            'color': 'color',
-        }
-        response = self.client.post(
-            '/campaign/quick-offer-order',
-            HTTP_X_AUTHORIZATION=f'Bearer {self.auth_token}',
+            data={'send_my_list': 'not_a_boolean'},
             format='json',
-            data=request_data,
         )
+        self.assertEqual(response.status_code, 400)
+        self.assertEqual(response.json()['success'], False)
+        self.assertEqual(response.json()['code'], 'request_invalid')
+
+    def test_update_send_my_list_true(self):
+        # Ensure initial state is False
+        self.quick_offer.send_my_list = False
+        self.quick_offer.save()
+
+        response = self.client.put(
+            self.url,
+            HTTP_X_AUTHORIZATION=f'Bearer {self.auth_token}',
+            data={'send_my_list': True},
+            format='json',
+        )
+
         self.assertEqual(response.status_code, 200)
-        self.assertDictEqual(
-            response.json(),
-            {
-                'success': True,
-                'message': 'Order placed successfully.',
-                'status': 200,
-                'data': {'reference': 2},
-            },
-        )
-        quick_offer_order = QuickOfferOrder.objects.filter(reference=2).first()
-        self.assertTrue(quick_offer_order)
-        self.assertTrue(
-            QuickOfferOrderProduct.objects.filter(quick_offer_order=quick_offer_order)
+        self.assertEqual(response.json()['success'], True)
+        self.assertEqual(response.json()['message'], 'List sent successfully.')
+
+        # Refresh the quick offer from the database
+        updated_quick_offer = QuickOffer.objects.get(id=self.quick_offer.id)
+        self.assertTrue(updated_quick_offer.send_my_list)
+
+    def test_update_send_my_list_false(self):
+        # Ensure initial state is True
+        self.quick_offer.send_my_list = True
+        self.quick_offer.save()
+
+        response = self.client.put(
+            self.url,
+            HTTP_X_AUTHORIZATION=f'Bearer {self.auth_token}',
+            data={'send_my_list': False},
+            format='json',
         )
 
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()['success'], True)
+        self.assertEqual(response.json()['message'], 'List sent successfully.')
 
-class QuickOfferGetOrder(TestCase):
-    fixtures = [
-        'src/fixtures/inventory.json',
-        'src/fixtures/campaign.json',
-        'src/fixtures/quick_offers.json',
-    ]
+        # Refresh the quick offer from the database
+        updated_quick_offer = QuickOffer.objects.get(id=self.quick_offer.id)
+        self.assertFalse(updated_quick_offer.send_my_list)
+
+    def test_multiple_updates(self):
+        # Test multiple consecutive updates
+        updates = [True, False, True]
+
+        for expected_value in updates:
+            response = self.client.put(
+                self.url,
+                HTTP_X_AUTHORIZATION=f'Bearer {self.auth_token}',
+                data={'send_my_list': expected_value},
+                format='json',
+            )
+
+            self.assertEqual(response.status_code, 200)
+            self.assertEqual(response.json()['success'], True)
+
+            # Refresh the quick offer from the database
+            updated_quick_offer = QuickOffer.objects.get(id=self.quick_offer.id)
+            self.assertEqual(updated_quick_offer.send_my_list, expected_value)
+
+    def test_different_quick_offer(self):
+        # Get a different quick offer
+        another_quick_offer = QuickOffer.objects.exclude(id=self.quick_offer.id).first()
+        another_auth_token = jwt_encode({'quick_offer_id': another_quick_offer.id})
+
+        response = self.client.put(
+            self.url,
+            HTTP_X_AUTHORIZATION=f'Bearer {another_auth_token}',
+            data={'send_my_list': True},
+            format='json',
+        )
+
+        self.assertEqual(response.status_code, 200)
+
+        # Verify the correct quick offer was updated
+        updated_quick_offer = QuickOffer.objects.get(id=another_quick_offer.id)
+        self.assertTrue(updated_quick_offer.send_my_list)
+
+
+class OrganizationProductTestCase(TestCase):
+    fixtures = ['src/fixtures/inventory.json', 'src/fixtures/campaign.json']
 
     def setUp(self):
         self.client = APIClient()
-        self.quick_offer = QuickOffer.objects.first()
-        self.auth_token = jwt_encode({'quick_offer_id': self.quick_offer.id})
+        user = get_user_model().objects.create(username='username')
+        self.client.force_authenticate(user)
+        self.organization = Organization.objects.first()
+        self.product = Product.objects.first()
+        self.organization_product = OrganizationProduct.objects.create(
+            organization=self.organization,
+            product=self.product,
+            price=10,
+        )
 
     def test_without_auth(self):
-        response = self.client.get('/campaign/quick-offer-order')
-        self.assertEqual(response.status_code, 401)
+        self.client.force_authenticate(None)
+        response = self.client.put('/campaign/organization-product', {}, format='json')
+        self.assertEqual(response.status_code, 403)
         self.assertDictEqual(
             response.json(),
             {'detail': 'Authentication credentials were not provided.'},
         )
 
-    def test_inactive_quick_offer(self):
-        QuickOffer.objects.update(status=QuickOffer.StatusEnum.PENDING)
-        response = self.client.get(
-            '/campaign/quick-offer-order',
-            HTTP_X_AUTHORIZATION=f'Bearer {self.auth_token}',
-        )
-        self.assertEqual(response.status_code, 403)
-        self.assertDictEqual(
-            response.json(),
-            {'detail': 'You do not have permission to perform this action.'},
-        )
-
-    def test_order_not_found(self):
-        QuickOfferOrder.objects.update(
-            status=QuickOfferOrder.OrderStatusEnum.INCOMPLETE
-        )
-        response = self.client.get(
-            '/campaign/quick-offer-order',
-            HTTP_X_AUTHORIZATION=f'Bearer {self.auth_token}',
-        )
-        self.assertEqual(response.status_code, 404)
-        self.assertDictEqual(
-            response.json(),
+    def test_invalid_request_data(self):
+        test_cases = [
             {
-                'success': False,
-                'message': 'Order not found.',
-                'code': 'not_found',
-                'status': 404,
-                'data': {},
+                'input': {
+                    'organization': 'invalid_organization_id',
+                    'product': 'invalid_product_id',
+                    'price': 'invalid_price',
+                },
+                'expected_errors': {
+                    'price': ['A valid integer is required.'],
+                    'organization': [
+                        'Incorrect type. Expected pk value, received str.'
+                    ],
+                    'product': ['Incorrect type. Expected pk value, received str.'],
+                },
             },
-        )
+            {
+                'input': {
+                    'organization': None,
+                    'product': None,
+                    'price': None,
+                },
+                'expected_errors': {
+                    'organization': ['This field may not be null.'],
+                    'product': ['This field may not be null.'],
+                    'price': ['This field may not be null.'],
+                },
+            },
+        ]
 
-    def test_valid_request(self):
-        QuickOfferOrder.objects.update(status=QuickOfferOrder.OrderStatusEnum.PENDING)
-        response = self.client.get(
-            '/campaign/quick-offer-order',
-            HTTP_X_AUTHORIZATION=f'Bearer {self.auth_token}',
+        for case in test_cases:
+            response = self.client.put(
+                '/campaign/organization-product',
+                case['input'],
+                format='json',
+            )
+            self.assertEqual(response.status_code, 400)
+            response_json = response.json()
+            self.assertEqual(response_json['success'], False)
+            self.assertEqual(response_json['message'], 'Request is invalid.')
+            self.assertEqual(response_json['code'], 'request_invalid')
+            self.assertEqual(response_json['data'], case['expected_errors'])
+
+    def test_valid_request_update_existing(self):
+        self.assertNotEqual(self.organization_product.price, 100)
+        response = self.client.put(
+            '/campaign/organization-product',
+            {
+                'organization': self.organization.id,
+                'product': self.product.id,
+                'price': 100,
+            },
+            format='json',
         )
         self.assertEqual(response.status_code, 200)
-        response.json()['data'].pop('order_date_time')
-        self.assertEqual(
+        self.assertDictEqual(
             response.json(),
             {
                 'success': True,
-                'message': 'Quick offer order fetched successfully.',
+                'message': 'Organization product updated successfully.',
                 'status': 200,
                 'data': {
-                    'full_name': 'quick_offer_order_1',
-                    'reference': 1,
-                    'products': [
-                        {
-                            'quantity': 3,
-                            'product': {
-                                'id': 1,
-                                'name': 'product name en 1',
-                                'description': 'description 1',
-                                'sku': 'sku 1',
-                                'link': '',
-                                'technical_details': '',
-                                'warranty': '',
-                                'exchange_value': None,
-                                'exchange_policy': '',
-                                'product_type': 'REGULAR',
-                                'product_kind': 'PHYSICAL',
-                                'brand': {
-                                    'name': 'brand name en 1',
-                                    'logo_image': None,
-                                },
-                                'supplier': {'name': 'supplier name en 1'},
-                                'images': [],
-                                'categories': [
-                                    {
-                                        'id': 1,
-                                        'name': 'category1',
-                                        'icon_image': None,
-                                        'order': 1,
-                                    }
-                                ],
-                                'calculated_price': 100,
-                                'remaining_quantity': 197,
-                            },
-                            'total_cost': 3,
-                        }
-                    ],
-                    'phone_number': '9876543210',
-                    'additional_phone_number': '9876543210',
-                    'delivery_city': 'quick_offer_order_1',
-                    'delivery_street': 'quick_offer_order_1',
-                    'delivery_street_number': 'quick_offer_order_1',
-                    'delivery_apartment_number': 'quick_offer_order_1',
-                    'delivery_additional_details': 'quick_offer_order_1',
+                    'id': self.organization_product.id,
+                    'price': 100,
+                    'organization': self.organization.id,
+                    'product': self.product.id,
                 },
             },
         )
+        self.organization_product.refresh_from_db()
+        self.assertEqual(self.organization_product.price, 100)
 
+    def test_valid_request_create_new(self):
+        self.organization_product.delete()
 
-class QuickOfferCancelOrder(TestCase):
-    fixtures = [
-        'src/fixtures/inventory.json',
-        'src/fixtures/campaign.json',
-        'src/fixtures/quick_offers.json',
-    ]
-
-    def setUp(self):
-        self.client = APIClient()
-        self.quick_offer = QuickOffer.objects.first()
-        self.auth_token = jwt_encode({'quick_offer_id': self.quick_offer.id})
-        self.quick_offer_order = QuickOfferOrder.objects.first()
-
-    def test_without_auth(self):
         response = self.client.put(
-            f'/campaign/quick-offer-cancel-order/{self.quick_offer_order.pk}'
-        )
-        self.assertEqual(response.status_code, 401)
-        self.assertDictEqual(
-            response.json(),
-            {'detail': 'Authentication credentials were not provided.'},
-        )
-
-    def test_inactive_quick_offer(self):
-        QuickOffer.objects.update(status=QuickOffer.StatusEnum.PENDING)
-        response = self.client.put(
-            f'/campaign/quick-offer-cancel-order/{self.quick_offer_order.pk}',
-            HTTP_X_AUTHORIZATION=f'Bearer {self.auth_token}',
-        )
-        self.assertEqual(response.status_code, 403)
-        self.assertDictEqual(
-            response.json(),
-            {'detail': 'You do not have permission to perform this action.'},
-        )
-
-    def test_order_not_found(self):
-        QuickOfferOrder.objects.update(
-            status=QuickOfferOrder.OrderStatusEnum.INCOMPLETE
-        )
-        response = self.client.put(
-            f'/campaign/quick-offer-cancel-order/{self.quick_offer_order.pk}',
-            HTTP_X_AUTHORIZATION=f'Bearer {self.auth_token}',
-        )
-        self.assertEqual(response.status_code, 404)
-        self.assertDictEqual(
-            response.json(),
+            '/campaign/organization-product',
             {
-                'success': False,
-                'message': 'Order not found.',
-                'code': 'not_found',
-                'status': 404,
-                'data': {},
+                'organization': self.organization.id,
+                'product': self.product.id,
+                'price': 150,
             },
+            format='json',
         )
 
-    def test_valid_request(self):
-        QuickOfferOrder.objects.update(status=QuickOfferOrder.OrderStatusEnum.PENDING)
-        self.assertTrue(
-            QuickOfferSelectedProduct.objects.filter(quick_offer=self.quick_offer)
-        )
-        response = self.client.put(
-            f'/campaign/quick-offer-cancel-order/{self.quick_offer_order.pk}',
-            HTTP_X_AUTHORIZATION=f'Bearer {self.auth_token}',
-        )
         self.assertEqual(response.status_code, 200)
-        self.assertDictEqual(
-            response.json(),
-            {
-                'success': True,
-                'message': 'order canceled successfully.',
-                'status': 200,
-                'data': {},
-            },
+
+        new_org_product = OrganizationProduct.objects.get(
+            organization=self.organization, product=self.product
         )
-        self.quick_offer_order.refresh_from_db()
-        self.assertEqual(self.quick_offer_order.status, 'OrderStatusEnum.CANCELLED')
-        self.assertFalse(
-            QuickOfferSelectedProduct.objects.filter(quick_offer=self.quick_offer)
+        self.assertEqual(new_org_product.price, 150)
+
+
+class CampaignEmployeeSaveTestCase(TestCase):
+    def setUp(self):
+        self.organization = Organization.objects.create(
+            name='test_org',
+            manager_full_name='test',
+            manager_phone_number='086786',
+            manager_email='info@gmail.com',
         )
+        self.employee_group = EmployeeGroup.objects.create(
+            name='test employee',
+            organization=self.organization,
+            auth_method='AUTH_ID',
+        )
+        self.campaign = Campaign.objects.create(
+            organization=self.organization,
+            name='campaign name',
+            start_date_time=django_timezone.now(),
+            end_date_time=django_timezone.now() + django_timezone.timedelta(hours=1),
+            status='ACTIVE',
+            login_page_title='en',
+            login_page_subtitle='en',
+            main_page_first_banner_title='en',
+            main_page_first_banner_subtitle='en',
+            main_page_first_banner_image='image',
+            main_page_first_banner_mobile_image='mobile_image',
+            main_page_second_banner_title='en',
+            main_page_second_banner_subtitle='en',
+            main_page_second_banner_background_color='#123456',
+            main_page_second_banner_text_color='WHITE',
+            sms_sender_name='sender',
+            sms_welcome_text='en',
+            email_welcome_text='en',
+            campaign_type=Campaign.CampaignTypeEnum.NORMAL.name,
+        )
+        self.employee = Employee.objects.create(
+            first_name='employee_first_name',
+            last_name='employee_last_name',
+            auth_id='employee_auth_id',
+            active=True,
+            employee_group=self.employee_group,
+        )
+
+    def test_save_with_egc_no_budget(self):
+        """Test total_budget is set to 0 when
+        EmployeeGroupCampaign has no budget"""
+        egc = EmployeeGroupCampaign.objects.create(
+            campaign=self.campaign,
+            employee_group=self.employee_group,
+            budget_per_employee=0,
+        )
+
+        campaign_employee = CampaignEmployee.objects.create(
+            campaign=self.campaign, employee=self.employee
+        )
+
+        self.assertEqual(campaign_employee.total_budget, egc.budget_per_employee)

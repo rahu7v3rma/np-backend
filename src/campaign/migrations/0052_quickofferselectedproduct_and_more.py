@@ -6,8 +6,8 @@ import django.db.models.deletion
 
 class Migration(migrations.Migration):
     dependencies = [
-        ('campaign', '0049_alter_quickoffer_quick_offer_type_and_more'),
-        ('inventory', '0041_product_offer_product_offer_en_product_offer_he'),
+        ('campaign', '0051_alter_quickoffer_quick_offer_type_and_more'),
+        ('inventory', '0044_product_offer_product_offer_en_product_offer_he'),
     ]
 
     operations = [

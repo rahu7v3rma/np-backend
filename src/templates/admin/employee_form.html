@@ -13,9 +13,10 @@
                 $.get(link, (response)=>{
                     $('#id_employee_group>option:gt(0)').remove();
                     response.data.forEach(item => {
-                        $('#id_employee_group').append($('<option>', { 
+                        $('#id_employee_group').append($('<option>', {
                             value: item.id,
-                            text : item.name 
+                            text : item.name ,
+                            'data-auth-method': item.auth_method // Store auth_method in a data attribute
                         }));
                     });
                 })
@@ -24,6 +25,16 @@
         $(document).ready(()=>{
                 // show campaigns on the employee_group selection
                 $('#id_employee_group').on('change', function() {
+                    const selectedOption = $('#id_employee_group option:selected');
+                    const authMethod = selectedOption.data('auth-method');
+
+                    $('.field-login_type').show();
+
+                    if (authMethod) {
+                        $('#id_login_type').val(authMethod);
+                    } else {
+                        $('#id_login_type').val('');
+                    }
                     $('.field-employee_group>p').remove();
                     if(! this.value){
                         return;
@@ -55,7 +66,13 @@
                 ]
                 for(const field of required_fields) $(`label[for="id_${field}"]`).addClass('required');
             }
+            const isEditPage = $('#id_employee_group').val() !== '';
 
+            if (isEditPage) {
+                $('.field-login_type').show();
+            } else {
+                $('.field-login_type').hide();
+            }
             handle_required_fields();
         })
     </script>

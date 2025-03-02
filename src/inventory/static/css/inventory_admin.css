@@ -1,0 +1,32 @@
+.colors-container {
+    display: flex;
+    gap: 16px;
+}
+
+.color-container {
+    border-radius: 50px;
+    height: 28px;
+    width: 28px;
+    display: flex;
+    justify-content: center;
+    align-items: center;
+}
+
+.color-container:hover {
+    box-shadow: 0 0 11px black; 
+  }
+
+.color-label {
+    min-width: 160px;
+}
+
+.color-wrapper {
+    display: flex;
+    align-items: center;
+    gap: 4px
+}
+
+*:disabled {
+    background-color: dimgrey !important;
+    color: linen !important;
+}

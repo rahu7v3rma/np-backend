@@ -33,6 +33,18 @@
         }
     },
     {
+        "model": "inventory.brand",
+        "pk": 2,
+        "fields": {
+            "name": "brand2",
+            "name_en": "brand2",
+            "name_he": "brand2 he",
+            "logo_image": "",
+            "updated_at": "2024-09-05T02:26:21",
+            "created_at": "2023-08-25T14:42:34"
+        }
+    },
+    {
         "model": "inventory.product",
         "pk": 1,
         "fields": {
@@ -113,6 +125,15 @@
         }
     },
     {
+        "model": "campaign.organizationproduct",
+        "pk": 1,
+        "fields": {
+            "product": 1,
+            "organization": 1,
+            "price": 10
+        }
+    },
+    {
         "model": "campaign.campaign",
         "pk": 1,
         "fields": {
@@ -123,7 +144,7 @@
             "start_date_time": "2024-05-09T17:50:34Z",
             "end_date_time": "2024-05-09T17:50:36Z",
             "code": "123456",
-            "campaign_type": "CampaignTypeEnum.EVENT",
+            "campaign_type": "NORMAL",
             "ship_to": "CampaignShippingEnum.TO_OFFICE",
             "status": "ACTIVE",
             "login_page_title": "",
@@ -152,7 +173,7 @@
             "start_date_time": "2024-05-09T17:50:34Z",
             "end_date_time": "2024-05-09T17:50:36Z",
             "code": "12345678",
-            "campaign_type": "CampaignTypeEnum.EVENT",
+            "campaign_type": "NORMAL",
             "ship_to": "CampaignShippingEnum.TO_OFFICE",
             "status": "ACTIVE",
             "login_page_title": "",

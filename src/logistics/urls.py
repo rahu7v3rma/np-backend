@@ -1,22 +1,27 @@
 from django.urls import path
 
-from .views import AddProductsOrderView, UpdateStatusProductsOrderView
+from . import admin_views, views
 
 
 urlpatterns = [
     path(
         'order-products',
-        AddProductsOrderView.as_view(),
+        admin_views.AddProductsOrderView.as_view(),
         name='order-products',
     ),
     path(
         'order-products/<int:pk>',
-        AddProductsOrderView.as_view(),
+        admin_views.AddProductsOrderView.as_view(),
         name='order-products',
     ),
     path(
         'order-products-status/<int:pk>',
-        UpdateStatusProductsOrderView.as_view(),
+        admin_views.UpdateStatusProductsOrderView.as_view(),
         name='order-products-status',
+    ),
+    path(
+        '<str:provider_name>/webhook',
+        views.ProviderWebhookView.as_view(),
+        name='provider-webhook',
     ),
 ]

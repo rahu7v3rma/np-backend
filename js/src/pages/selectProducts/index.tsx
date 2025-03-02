@@ -6,7 +6,6 @@ import Tabs from './_components/tabs';
 
 const SelectProducts: FunctionComponent = () => {
   const { config } = useNPConfig();
-
   const currentWizardStep = config?.currentWizardStep || '-1';
 
   const organizationId = useMemo(() => {
@@ -23,13 +22,30 @@ const SelectProducts: FunctionComponent = () => {
       : [];
   }, [config]);
 
+  const initialForms = useMemo(() => {
+    return config?.data
+      ? JSON.parse(config?.data.replace(/&quot;/g, '"') || '{}')
+          ?.total_group_products || 0
+      : null;
+  }, [config]);
+
   const tabs = useMemo(() => {
     return employeeGroups.map(
-      (employee_group: { name: string; budget: number }, index: number) => ({
+      (
+        employee_group: {
+          name: string;
+          budget: number;
+          employee_group_id: number;
+          default_discount: string;
+        },
+        index: number,
+      ) => ({
+        id: employee_group?.employee_group_id,
         label: employee_group?.name,
         idx: index,
         key: index,
         budget: employee_group.budget,
+        default_discount: employee_group.default_discount,
       }),
     );
   }, [employeeGroups]);
@@ -53,7 +69,7 @@ const SelectProducts: FunctionComponent = () => {
         <input
           type="hidden"
           name={`${currentWizardStep}-INITIAL_FORMS`}
-          value="0"
+          value={`${initialForms}`}
           id={`id_${currentWizardStep}-INITIAL_FORMS`}
         />
         <input

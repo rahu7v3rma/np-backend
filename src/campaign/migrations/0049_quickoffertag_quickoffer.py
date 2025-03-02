@@ -12,7 +12,7 @@ import lib.storage
 
 class Migration(migrations.Migration):
     dependencies = [
-        ('campaign', '0046_alter_order_color_alter_order_country_and_more'),
+        ('campaign', '0048_orderproduct_variations'),
         ('inventory', '0040_alter_supplier_house_number'),
     ]
 

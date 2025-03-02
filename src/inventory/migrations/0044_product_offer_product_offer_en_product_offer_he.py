@@ -5,7 +5,7 @@ from django.db import migrations, models
 
 class Migration(migrations.Migration):
     dependencies = [
-        ('inventory', '0040_alter_supplier_house_number'),
+        ('inventory', '0043_alter_productcolorvariationimage_product_and_more'),
     ]
 
     operations = [

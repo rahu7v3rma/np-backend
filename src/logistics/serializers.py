@@ -1,3 +1,4 @@
+from rest_framework import serializers
 from rest_framework.serializers import ModelSerializer
 
 from .models import (
@@ -7,6 +8,8 @@ from .models import (
 
 
 class PurchaseOrderProductSerializer(ModelSerializer):
+    order = serializers.IntegerField(read_only=True)
+
     class Meta:
         model = PurchaseOrderProduct
         fields = '__all__'

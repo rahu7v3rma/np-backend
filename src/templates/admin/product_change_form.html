@@ -1,12 +1,14 @@
 {% extends 'admin/change_form.html' %}
 {% load static %}
+{% block extrastyle %}{{ block.super }}<link rel="stylesheet" href="{% static "/css/inventory_admin.css" %}">{% endblock %}
+
 
 {% block admin_change_form_document_ready %}
-    {{ block.super }}
-    <script src="https://ajax.googleapis.com/ajax/libs/jquery/2.1.3/jquery.min.js"></script>
-    <link href="https://cdn.jsdelivr.net/npm/select2@4.1.0-rc.0/dist/css/select2.min.css" rel="stylesheet" />
-    <script src="https://cdn.jsdelivr.net/npm/select2@4.1.0-rc.0/dist/js/select2.min.js"></script>
-    <script>
+{{ block.super }}
+<script src="https://ajax.googleapis.com/ajax/libs/jquery/2.1.3/jquery.min.js"></script>
+<link href="https://cdn.jsdelivr.net/npm/select2@4.1.0-rc.0/dist/css/select2.min.css" rel="stylesheet" />
+<script src="https://cdn.jsdelivr.net/npm/select2@4.1.0-rc.0/dist/js/select2.min.js"></script>
+<script>
         $(document).ready(()=>{
             const handleOfferSelect = () => {
                 const offersHe = {
@@ -25,21 +27,21 @@
 
             handleOfferSelect();
         })
-    </script>
-    <script>
-        $('[type=checkbox][id*="id_images"]').not("[id*='DELETE']").each((idx, el) => {
-            $(el).on('change', () => {
-                if ($(el).is(":checked")) {
-                    $('[type=checkbox][id*="id_images"]').not("[id*='DELETE']").each((idx, ell) => {
-                        if (el != ell) {
-                            $(ell).prop("checked", false)
-                        }
-                    })
-                }
-            })
+  </script>
+  <script>
+    $('[type=checkbox][id*="id_images"]').not("[id*='DELETE']").each((idx, el) => {
+        $(el).on('change', () => {
+            if ($(el).is(":checked")) {
+                $('[type=checkbox][id*="id_images"]').not("[id*='DELETE']").each((idx, ell) => {
+                    if (el != ell) {
+                        $(ell).prop("checked", false)
+                    }
+                })
+            }
         })
+    })
 
-           // Add the following to style the `link` textarea
+    // Add the following to style the `link` textarea
     $(document).ready(function () {
         let textareaStyle = {
             'width': '70ch',
@@ -55,143 +57,157 @@
         $('#id_exchange_policy_en').css(textareaStyle)
         $('#id_exchange_policy_he').css(textareaStyle)
     });
-    </script>
-    <script>
-        let salePriceOld = $('#id_sale_price').val();
-        let costPriceOld = $('#id_cost_price').val();
-        let deliveryPriceOld = $('#id_delivery_price').val();
-        let logisticsRateCostPercentOld = $('#id_logistics_rate_cost_percent').val();
-        let googlePriceOld = $('#id_google_price').val();
-        let preSelectedBrand = $('#id_brand').val();
-        $('document').ready(() => {
-            $('.field-total_cost .readonly').text(+$('.field-total_cost .readonly').text() || '')
-            $('.field-logistics_rate_cost_percent').after($('.field-total_cost'));
+</script>
+<script>
+    let salePriceOld = $('#id_sale_price').val();
+    let costPriceOld = $('#id_cost_price').val();
+    let deliveryPriceOld = $('#id_delivery_price').val();
+    let logisticsRateCostPercentOld = $('#id_logistics_rate_cost_percent').val();
+    let googlePriceOld = $('#id_google_price').val();
+    let preSelectedBrand = $('#id_brand').val();
 
-            $('#id_delivery_price').prop(
-                'disabled',
-                !['LARGE_PRODUCT', 'SENT_BY_SUPPLIER'].includes($('#id_product_type :selected').val())
-            );
+    $('document').ready(() => {
+        $('.field-total_cost .readonly').text(+$('.field-total_cost .readonly').text() || '')
+        $('.field-logistics_rate_cost_percent').after($('.field-total_cost'));
 
-            $('#id_cost_price').on('change', function () {
-                calculate_total_cost($('#id_product_type :selected').val())
-            });
-            $('#id_delivery_price').on('change', function () {
-                calculate_total_cost($('#id_product_type :selected').val())
-            });
-            $('#id_logistics_rate_cost_percent').on('change', function () {
-                calculate_total_cost($('#id_product_type :selected').val())
-            });
+        $('#id_cost_price').on('change', function () {
+            calculate_total_cost($('#id_product_type :selected').val())
+        });
+        $('#id_delivery_price').on('change', function () {
+            calculate_total_cost($('#id_product_type :selected').val())
+        });
+        $('#id_logistics_rate_cost_percent').on('change', function () {
+            calculate_total_cost($('#id_product_type :selected').val())
+        });
 
-            const calculate_total_cost = (productType) => {
-                let costPrice = Number($('#id_cost_price').val());
-                const deliveryPrice = Number($('#id_delivery_price').val());
-                const logisticsRateCostPercent = Number($('#id_logistics_rate_cost_percent').val());
+        const calculate_total_cost = (productType) => {
+            let costPrice = Number($('#id_cost_price').val());
+            const deliveryPrice = Number($('#id_delivery_price').val());
+            const logisticsRateCostPercent = Number($('#id_logistics_rate_cost_percent').val());
 
-                if (logisticsRateCostPercent) {
-                    costPrice *= (1 + logisticsRateCostPercent / 100);
-                }
+            if (logisticsRateCostPercent) {
+                costPrice *= (1 + logisticsRateCostPercent / 100);
+            }
 
-                if (deliveryPrice && ['LARGE_PRODUCT', 'SENT_BY_SUPPLIER'].includes(productType)) {
-                    costPrice += deliveryPrice;
-                }
+            if (deliveryPrice) {
+                costPrice += deliveryPrice;
+            }
 
-                $('.field-total_cost .readonly').text(costPrice.toFixed(1));
-            };
+            $('.field-total_cost .readonly').text(costPrice.toFixed(1));
+        };
 
-            const updatePriceFields = () => {
-                let totalCostPrice = 0;
-                let totalDeliveryPrice = 0;
-                let totalLogisticsCostPercent = 0;
-                let totalGooglePrice = 0;
-                let totalSalePrice = 0;
-                let brand = null;
-                let _brand = null;
-                let supplier = null;
-                let _supplier = null;
+        const updatePriceFields = () => {
+            let totalCostPrice = 0;
+            let totalDeliveryPrice = 0;
+            let totalLogisticsCostPercent = 0;
+            let totalGooglePrice = 0;
+            let totalSalePrice = 0;
+            let brand = null;
+            let _brand = null;
+            let supplier = null;
+            let _supplier = null;
 
-                // Update fields with total values
-                $('#id_cost_price').val(totalCostPrice.toFixed(2));
-                $('#id_brand').val(brand);
-                $('#id_supplier').val(supplier);
-                $('#id_delivery_price').val(totalDeliveryPrice.toFixed(2));
-                $('#id_logistics_rate_cost_percent').val(totalLogisticsCostPercent.toFixed(2));
-                $('#id_google_price').val(totalGooglePrice.toFixed(2));
-                $('#id_sale_price').val(totalSalePrice.toFixed(2));
+            // Update fields with total values
+            $('#id_cost_price').val(totalCostPrice.toFixed(2));
+            $('#id_brand').val(brand);
+            $('#id_supplier').val(supplier);
+            $('#id_delivery_price').val(totalDeliveryPrice.toFixed(2));
+            $('#id_logistics_rate_cost_percent').val(totalLogisticsCostPercent.toFixed(2));
+            $('#id_google_price').val(totalGooglePrice.toFixed(2));
+            $('#id_sale_price').val(totalSalePrice.toFixed(2));
 
-                calculate_total_cost($('#id_product_type').val());
-            };
-
-            const toggle_sku_features = (productType) => {
-                let selectedSupplierOld = $('#id_supplier').val();
-                let selectedBrandOld = $('#id_brand').val();
-                if (productType === 'BUNDLE') {
-                    $('#id_sku').prop('disabled', true);
-                    $('#id_supplier').prop('disabled', true);
-                    $('#id_brand').prop('disabled', true);
-                    $('#id_cost_price').prop('disabled', true);
-                    $('#id_delivery_price').prop('disabled', true);
-                    $('#id_logistics_rate_cost_percent').prop('disabled', true);
-                    $('#id_sale_price').prop('disabled', true);
-                    $('#id_google_price').prop('disabled', true);
-                    $('#bundled_items-group').show();
-                } else {
-                    $('#id_sku').prop('disabled', false);
-                    $('#id_supplier').prop('disabled', false);
-                    $('#id_brand').prop('disabled', false);
-                    $('#id_cost_price').prop('disabled', false);
-                    $('#id_delivery_price').prop('disabled', false);
-                    $('#id_logistics_rate_cost_percent').prop('disabled', false);
-                    $('#id_sale_price').prop('disabled', false);
-                    $('#id_google_price').prop('disabled', false);
-                    $('#bundled_items-group').hide();
-                }
-            };
-
-            $('#id_product_kind').on('change', function () {
-                const productKind = this.value;
-                toggle_sku_features(productKind);
-            });
-
-            $('#id_product_type').on('change', function () {
-                if (!['LARGE_PRODUCT', 'SENT_BY_SUPPLIER'].includes(this.value)) {
-                    $('#id_delivery_price').val('').prop('disabled', true)
-                } else {
-                    $('#id_delivery_price').prop('disabled', false)
-                }
-                calculate_total_cost(this.value);
-            });
-
-            toggle_sku_features($('#id_product_kind').val());
             calculate_total_cost($('#id_product_type').val());
-
-            let find_prod_value = null;
-            const product_edit_page = '{{ object_id }}' !== 'None';
-            const supplier_brands = JSON.parse('{{ supplier_brands|escapejs }}');
-            const handle_supplier_brands_select = (selected_supplier_id) => {
-                $('select[name="brand"]').empty();
-                find_prod_value = null;
-                supplier_brands.filter(supplier_brand=>supplier_brand.id === +selected_supplier_id).forEach(supplier_brand=>{
-                    $('select[name="brand"]').append(`<option value="${supplier_brand.brands__id}">${supplier_brand.brands__name}</option>`);
-                    if(String(supplier_brand.brands__id) === (preSelectedBrand)) {
-                        find_prod_value = preSelectedBrand;
-                    }
-                });
-            }
-            if(product_edit_page) {
-                const selected_brand_id = $('select[name="brand"]').val();
-                handle_supplier_brands_select($('select[name="supplier"]').val())
-                $('select[name="brand"]').val(selected_brand_id);
+        };
+        const toggle_money_feature = (productKind) => {
+            if (productKind === 'MONEY') {
+                $('.field-voucher_type').show();
+                $('.field-client_discount_rate').show();
+                $('.field-supplier_discount_rate').show();
+                $('#id_cost_price').val(0);
+                $('#id_product_quantity').val(2147483647);
             } else {
-                $('select[name="brand"]').attr('disabled',true);
+                $('.field-voucher_type').hide();
+                $('.field-client_discount_rate').hide();
+                $('.field-supplier_discount_rate').hide();
             }
-            $('select[name="supplier"]').on('input', (e) => {
-                handle_supplier_brands_select(e.target.value);
-                $('select[name="brand"]').prepend('<option value selected>---------</option>');
-                $('select[name="brand"]').removeAttr('disabled');
-                if (find_prod_value) {
-                    document.getElementById('id_brand').value = find_prod_value;
+        };
+
+        const toggle_sku_features = (productType) => {
+            let selectedSupplierOld = $('#id_supplier').val();
+            let selectedBrandOld = $('#id_brand').val();
+            toggle_money_feature(productType);
+            if (productType === 'BUNDLE') {
+                $('#id_sku').prop('disabled', true);
+                $('#id_supplier').prop('disabled', true);
+                $('#id_brand').prop('disabled', true);
+                $('#id_cost_price').prop('disabled', true);
+                $('#id_delivery_price').prop('disabled', true);
+                $('#id_logistics_rate_cost_percent').prop('disabled', true);
+                $('#id_sale_price').prop('disabled', true);
+                $('#id_google_price').prop('disabled', true);
+                $('#bundled_items-group').show();
+            } else {
+                $('#id_sku').prop('disabled', false);
+                $('#id_supplier').prop('disabled', false);
+                $('#id_brand').prop('disabled', false);
+                $('#id_cost_price').prop('disabled', false);
+                $('#id_delivery_price').prop('disabled', false);
+                $('#id_logistics_rate_cost_percent').prop('disabled', false);
+                $('#id_sale_price').prop('disabled', false);
+                $('#id_google_price').prop('disabled', false);
+                $('#bundled_items-group').hide();
+            }
+            $('#id_cost_price').prop('readonly', productType === 'MONEY');
+            $('#id_delivery_price').prop('readonly', productType === 'MONEY');
+            $('#id_logistics_rate_cost_percent').prop('readonly', productType === 'MONEY');
+            $('#id_google_price').prop('readonly', productType === 'MONEY');
+            $('#id_sale_price').prop('readonly', productType === 'MONEY');
+            $('#id_exchange_value').prop('readonly', productType === 'MONEY');
+            $('#id_product_quantity').prop('readonly', productType === 'MONEY');
+        };
+
+        $('#id_product_kind').on('change', function () {
+            const productKind = this.value;
+            toggle_sku_features(productKind);
+        });
+
+        $('#id_product_type').on('change', function () {
+            calculate_total_cost(this.value);
+        });
+
+        toggle_sku_features($('#id_product_kind').val());
+        calculate_total_cost($('#id_product_type').val());
+        toggle_money_feature($('#id_product_kind').val());
+
+        let find_prod_value = null;
+        const product_edit_page = '{{ object_id }}' !== 'None';
+        const supplier_brands = JSON.parse('{{ supplier_brands|escapejs }}');
+        const handle_supplier_brands_select = (selected_supplier_id) => {
+            $('select[name="brand"]').empty();
+            find_prod_value = null;
+            supplier_brands.filter(supplier_brand => supplier_brand.id === +selected_supplier_id).forEach(supplier_brand => {
+                $('select[name="brand"]').append(`<option value="${supplier_brand.brands__id}">${supplier_brand.brands__name}</option>`);
+                if (String(supplier_brand.brands__id) === (preSelectedBrand)) {
+                    find_prod_value = preSelectedBrand;
                 }
             });
-        })
-    </script>
+        }
+        if (product_edit_page) {
+            const selected_brand_id = $('select[name="brand"]').val();
+            handle_supplier_brands_select($('select[name="supplier"]').val())
+            $('select[name="brand"]').val(selected_brand_id);
+        } else {
+            $('select[name="brand"]').attr('disabled', true);
+        }
+        $('select[name="supplier"]').on('input', (e) => {
+            handle_supplier_brands_select(e.target.value);
+            $('select[name="brand"]').prepend('<option value selected>---------</option>');
+            $('select[name="brand"]').removeAttr('disabled');
+            if (find_prod_value) {
+                document.getElementById('id_brand').value = find_prod_value;
+            }
+        });
+    });
+    setVariation({{ variation_mapping|safe }})
+</script>
 {% endblock %}

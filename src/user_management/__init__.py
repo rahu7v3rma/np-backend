@@ -4,7 +4,9 @@ from rest_framework import HTTP_HEADER_ENCODING, authentication
 # copied and repurposed from
 # https://github.com/encode/django-rest-framework/blob/a1b35bb44b7c9251c8b7bc995aa6598044f1d3ef/rest_framework/authentication.py#L14
 def get_authorization_header(request):
-    auth = request.META.get('HTTP_X_AUTHORIZATION', b'')
+    auth = request.META.get('HTTP_X_AUTHORIZATION', b'') or request.META.get(
+        'HTTP_AUTHORIZATION', b''
+    )
     if isinstance(auth, str):
         auth = auth.encode(HTTP_HEADER_ENCODING)
     return auth

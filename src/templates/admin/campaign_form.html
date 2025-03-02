@@ -61,7 +61,7 @@
     const total = Number($('#id_1-TOTAL_FORMS').val());
     const newId = total;
 
-    for (const field of ['employee_group', 'budget_per_employee', 'product_selection_mode', 'displayed_currency']) {
+    for (const field of ['employee_group', 'default_discount', 'budget_per_employee', 'product_selection_mode', 'displayed_currency', 'check_out_location']) {
       const lastElement = $(`[id*=-${field}]:eq(-1)`);
       const newElement = lastElement.parent().clone(true);
 

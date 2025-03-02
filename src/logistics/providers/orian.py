@@ -1,11 +1,17 @@
-from datetime import datetime
+from datetime import datetime, timezone
+from io import BytesIO
 import logging
+import os
 import time
 from typing import Generator
 
 from django.conf import settings
+from django.core.files.base import ContentFile
+from django.core.files.storage import storages
+from django.db import transaction
 import paramiko
 import requests
+import xmltodict
 
 from campaign.models import (
     DeliveryLocationEnum,
@@ -15,11 +21,14 @@ from campaign.models import (
 )
 from inventory.models import Product, Supplier
 
+from ..enums import LogisticsCenterEnum
 from ..models import (
     LogisticsCenterInboundReceipt,
     LogisticsCenterInboundReceiptLine,
     LogisticsCenterMessage,
     LogisticsCenterOrderStatus,
+    LogisticsCenterStockSnapshot,
+    LogisticsCenterStockSnapshotLine,
     PurchaseOrder,
     PurchaseOrderProduct,
 )
@@ -340,8 +349,7 @@ def add_or_update_outbound(
                 },
                 'CONTACT': {
                     'STREET1': (
-                        f'{outbound_delivery_street} '
-                        f'{outbound_delivery_street_number}'
+                        f'{outbound_delivery_street} {outbound_delivery_street_number}'
                     ),
                     'STREET2': f'דירה {outbound_delivery_apartment_number}'
                     if outbound_delivery_apartment_number
@@ -557,7 +565,7 @@ def handle_logistics_center_ship_order_message(
     )
 
 
-def fetch_logistics_center_snapshots() -> (
+def _fetch_logistics_center_snapshots() -> (
     Generator[tuple[str, datetime, bytes], None, None]
 ):
     """
@@ -601,3 +609,127 @@ def fetch_logistics_center_snapshots() -> (
             transport.close()
         except Exception as _:
             pass
+
+
+def sync_logistics_center_snapshot_files() -> list[tuple[str, datetime]]:
+    logger.info('Syncing with orian logistics center snapshots...')
+
+    snapshot_count = 0
+    synced_snapshots = []
+
+    for (
+        snapshot_file_path,
+        snapshot_date_time,
+        snapshot_data,
+    ) in _fetch_logistics_center_snapshots():
+        logger.info(f'Fetched snapshot {snapshot_file_path}, saving it...')
+
+        storage = storages['logistics']
+        storage_file_name = storage.generate_filename(
+            os.path.join(
+                LogisticsCenterEnum.ORIAN.name,
+                snapshot_file_path,
+            ),
+        )
+
+        # check if the snapshot is already in s3
+        if storage.exists(storage_file_name):
+            logger.info(f'Fetched snapshot {snapshot_file_path} is already saved')
+            continue
+
+        # otherwise put in s3
+        buffer = BytesIO(snapshot_data)
+        storage.save(storage_file_name, ContentFile(buffer.read()))
+        logger.info(f'Fetched snapshot {snapshot_file_path} saved!')
+
+        synced_snapshots.append((snapshot_file_path, snapshot_date_time))
+
+        snapshot_count += 1
+
+    logger.info(f'Successfully synced {snapshot_count} snapshot files!')
+
+    return synced_snapshots
+
+
+def process_logistics_center_snapshot_file(
+    snapshot_file_path: str, snapshot_date_time: datetime
+) -> bool:
+    logger.info(f'Processing orian logistics center snapshot {snapshot_file_path}...')
+
+    storage = storages['logistics']
+    storage_file_name = storage.generate_filename(
+        os.path.join(
+            LogisticsCenterEnum.ORIAN.name,
+            snapshot_file_path,
+        ),
+    )
+
+    # make sure the snapshot is already in s3
+    if not storage.exists(storage_file_name):
+        logger.error(
+            f'Failed to process orian snapshot {snapshot_file_path} - file not found'
+        )
+        return False
+
+    with storage.open(storage_file_name, 'r') as f:
+        snapshot_data = f.read()
+
+    snapshot_dict = xmltodict.parse(snapshot_data)
+
+    # use transaction to make sure we have the entire snapshot in our db
+    with transaction.atomic():
+        # create stock snapshot record
+        stock_snapshot_data = {
+            'snapshot_file_path': snapshot_file_path,
+            'processed_date_time': datetime.now(timezone.utc),
+        }
+
+        stock_snapshot, _ = LogisticsCenterStockSnapshot.objects.update_or_create(
+            center=LogisticsCenterEnum.ORIAN.name,
+            snapshot_date_time=snapshot_date_time,
+            defaults=stock_snapshot_data,
+            create_defaults=stock_snapshot_data,
+        )
+
+        # read snapshot lines list and convert value to list since with this
+        # xml format if a single line was provided there is no way of knowing
+        # it is part of an array
+        snapshot_lines = snapshot_dict['DATACOLLECTION'].get('DATA', [])
+        if not isinstance(snapshot_lines, list):
+            snapshot_lines = [snapshot_lines]
+
+        for snapshot_line in snapshot_lines:
+            # create stock snapshot line record
+            stock_snapshot_line_data = {'quantity': int(float(snapshot_line['QTY']))}
+
+            LogisticsCenterStockSnapshotLine.objects.update_or_create(
+                stock_snapshot=stock_snapshot,
+                sku=snapshot_line['SKU'],
+                defaults=stock_snapshot_line_data,
+                create_defaults=stock_snapshot_line_data,
+            )
+
+    logger.info(
+        f'Successfully processed orian logistics center snapshot {snapshot_file_path}!'
+    )
+    logger.info("Updating products' snapshot stock values...")
+
+    # fetch the latest snapshot (the one we just processed may not be the
+    # latest)
+    latest_snapshot = LogisticsCenterStockSnapshot.objects.order_by(
+        '-snapshot_date_time'
+    )[0]
+    latest_snapshot_lines = {line.sku: line for line in latest_snapshot.lines.all()}
+
+    # new transaction for product updates
+    with transaction.atomic():
+        # update each product's logsitics snapshot stock
+        for product in Product.objects.all():
+            product.logistics_snapshot_stock_line = latest_snapshot_lines.get(
+                product.sku, None
+            )
+            product.save(update_fields=['logistics_snapshot_stock_line'])
+
+    logger.info("Successfully updated products' snapshot stock values!")
+
+    return True

@@ -1,7 +1,15 @@
 from modeltranslation.translator import TranslationOptions, translator
 
 from campaign.models import Employee, Organization
-from inventory.models import Brand, Category, Product, Supplier, Tag
+from inventory.models import (
+    Brand,
+    Category,
+    Product,
+    Supplier,
+    Tag,
+    TextVariation,
+    Variation,
+)
 
 
 class ProductTranslationOptions(TranslationOptions):
@@ -49,6 +57,14 @@ class EmployeeTranslationOptions(TranslationOptions):
     required_languages = {'default': ('first_name', 'last_name')}
 
 
+class VariationTranslationOptions(TranslationOptions):
+    fields = ('system_name', 'site_name')
+
+
+class TextVariationTranslationOptions(TranslationOptions):
+    fields = ('text',)
+
+
 translator.register(Product, ProductTranslationOptions)
 translator.register(Brand, BrandTranslationOptions)
 translator.register(Supplier, SupplierTranslationOptions)
@@ -56,3 +72,5 @@ translator.register(Category, CategoryTranslationOptions)
 translator.register(Tag, TagTranslationOptions)
 translator.register(Organization, OrganizationTranslationOptions)
 translator.register(Employee, EmployeeTranslationOptions)
+translator.register(Variation, VariationTranslationOptions)
+translator.register(TextVariation, TextVariationTranslationOptions)
