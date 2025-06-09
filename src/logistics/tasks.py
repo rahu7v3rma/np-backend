@@ -16,10 +16,7 @@ import pytz
 
 from campaign.models import Order
 from inventory.models import Product, Variation
-from services.email import (
-    send_export_download_email,
-    send_purchase_order_email,
-)
+from services.email import send_export_download_email, send_purchase_order_email
 
 from .enums import LogisticsCenterEnum, LogisticsCenterMessageTypeEnum
 from .models import EmployeeOrderProduct, LogisticsCenterMessage, PurchaseOrder
@@ -44,22 +41,88 @@ from .providers.pick_and_pack import (
     handle_logistics_center_ship_order_message as pick_and_pack_handle_logistics_center_ship_order_message,  # noqa: E501
     handle_logistics_center_snapshot_message as pick_and_pack_handle_logistics_center_snapshot_message,  # noqa: E501
 )
+from .utils import snake_to_title
 
 
 logger = logging.getLogger(__name__)
 
 
 @shared_task
-def send_purchaseorder_to_supplier(po_ids=[]):
-    logger.info(f'sending welcome messages for purchase order IDs {po_ids}...')
+def send_purchase_orders_to_supplier(po_ids=[]):
+    logger.info(
+        f'sending puchase order emails to suppliers for purchase order IDs {po_ids}...'
+    )
     purchase_orders = PurchaseOrder.objects.filter(id__in=po_ids)
 
     for purchase_order in purchase_orders:
         logger.info(f'sending email to {purchase_order.id}...')
-        send_purchase_order_email(purchase_order)
+        send_purchase_order_to_supplier.apply_async((purchase_order.pk, 'he'))
         logger.info(f'sent email to {purchase_order.id}')
 
     logger.info('done sending puchase order emails to suppliers')
+
+
+@shared_task
+def send_purchase_order_to_supplier(order_id: int, language_code: str) -> bool:
+    order: PurchaseOrder = PurchaseOrder.objects.filter(id=order_id).first()
+    products = order.products.all()
+    products_data = []
+    sub_total = 0
+    for _product in products:
+        _category = _product.product_id.categories.all().first()
+        _category = _category.name if _category else ''
+        _brand = _product.product_id.brand.name
+        cost_price = round(
+            _product.product_id.cost_price / ((100 + settings.TAX_PERCENT) / 100), 2
+        )
+        if _product.product_id.product_kind == Product.ProductKindEnum.MONEY.name:
+            cost_price = int(cost_price)
+        total_price = cost_price * _product.quantity_ordered
+        products_data.append(
+            {
+                'id': _product.product_id.id,
+                'main': _product.product_id.main_image_link,
+                'name': _product.product_id.name_he,
+                'category': _category,
+                'brand': _brand,
+                'quantity': _product.quantity_ordered,
+                'quantity_received': 0,
+                'sku': _product.product_id.sku,
+                'barcode': _product.product_id.reference,
+                'cost_price': cost_price,
+                'status': order.status,
+                'supplier': _product.product_id.supplier.name,
+                'total_price': total_price,
+            }
+        )
+
+        sub_total += total_price
+
+    column_headers = snake_to_title(list(products_data[0].keys()))
+
+    workbook = Workbook()
+    xlsx = workbook.active
+    xlsx.append(column_headers)
+
+    for product_idx, _product in enumerate(products_data):
+        row = list(_product.values())
+        xlsx.append(row)
+
+    xlsx.append([])
+    xlsx.append(['Description', 'Total Price'])
+    xlsx.append([order.notes, sub_total])
+
+    output = BytesIO()
+    workbook.save(output)
+    output.seek(0)
+
+    attachment = {
+        'filename': f'Order_Products_{order.id}.xlsx',
+        'content': output.getvalue(),
+        'mimetype': 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+    }
+
+    return send_purchase_order_email(order, attachment, language_code)
 
 
 @shared_task(
@@ -71,6 +134,12 @@ def send_purchase_order_to_logistics_center(
     logger.info(f'Sending purchase order {purchase_order_id} to logistics center...')
 
     purchase_order = PurchaseOrder.objects.get(id=purchase_order_id)
+
+    if purchase_order.status == PurchaseOrder.Status.APPROVED.name:
+        # the purchase order was approved since this task was queued, so we can
+        # just exit
+        logger.info(f'Purchase order {purchase_order_id} is already approved')
+        return True
 
     logger.info('Syncing supplier data with logistics center')
 
@@ -108,8 +177,15 @@ def send_purchase_order_to_logistics_center(
         product.quantity_sent_to_logistics_center = product.quantity_ordered
         product.save(update_fields=['quantity_sent_to_logistics_center'])
 
+    # update purchase order status and sent timestamp
+    purchase_order.status = PurchaseOrder.Status.APPROVED.name
     purchase_order.sent_to_logistics_center_at = datetime.now()
-    purchase_order.save(update_fields=['sent_to_logistics_center_at'])
+
+    # use this flag to let the pre-save signal know this change is made from
+    # the right place
+    purchase_order._approved_by_func = True
+    purchase_order.save(update_fields=['status', 'sent_to_logistics_center_at'])
+    delattr(purchase_order, '_approved_by_func')
 
     logger.info(
         f'Successfully sent purchase order {purchase_order_id} to logistics center!'
@@ -148,33 +224,43 @@ def send_order_to_logistics_center(order_id: int, center: LogisticsCenterEnum) -
         )
         return True
 
-    logger.info('Syncing dummy customer data with logistics center')
+    try:
+        logger.info('Syncing dummy customer data with logistics center')
 
-    if center == LogisticsCenterEnum.ORIAN:
-        if not orian_add_or_update_dummy_customer():
-            raise Exception('Failed to sync dummy customer data!')
+        if center == LogisticsCenterEnum.ORIAN:
+            if not orian_add_or_update_dummy_customer():
+                raise Exception('Failed to sync dummy customer data!')
 
-    logger.info('Sending outbound request to logistics center')
+        logger.info('Sending outbound request to logistics center')
 
-    # create outbound with the date in the logsitics center's timezone
-    if center == LogisticsCenterEnum.ORIAN:
-        if not orian_add_or_update_outbound(
-            order,
-            order_products,
-            datetime.now(pytz.timezone(settings.ORIAN_MESSAGE_TIMEZONE_NAME)),
-        ):
-            raise Exception('Failed to send outbound!')
-    elif center == LogisticsCenterEnum.PICK_AND_PACK:
-        if not pick_and_pack_add_or_update_outbound(
-            order,
-            order_products,
-            datetime.now(pytz.timezone(settings.PAP_MESSAGE_TIMEZONE_NAME)),
-        ):
-            raise Exception('Failed to send outbound!')
+        # create outbound with the date in the logsitics center's timezone
+        if center == LogisticsCenterEnum.ORIAN:
+            if not orian_add_or_update_outbound(
+                order,
+                order_products,
+                datetime.now(pytz.timezone(settings.ORIAN_MESSAGE_TIMEZONE_NAME)),
+            ):
+                raise Exception('Failed to send outbound!')
+        elif center == LogisticsCenterEnum.PICK_AND_PACK:
+            if not pick_and_pack_add_or_update_outbound(
+                order,
+                order_products,
+                datetime.now(pytz.timezone(settings.PAP_MESSAGE_TIMEZONE_NAME)),
+            ):
+                raise Exception('Failed to send outbound!')
+    except:
+        # set the order logistics center status to "Error" so this can be
+        # tracked, then re-raise the exception
+        order.logistics_center_status = 'Error'
+        order.save(update_fields=['logistics_center_status'])
 
-    # update order status
+        raise
+
+    # update order status and reset error status
     order.status = Order.OrderStatusEnum.SENT_TO_LOGISTIC_CENTER.name
-    order.save(update_fields=['status'])
+    if order.logistics_center_status == 'Error':
+        order.logistics_center_status = None
+    order.save(update_fields=['status', 'logistics_center_status'])
 
     logger.info(f'Successfully sent order {order_id} to logistics center!')
 
@@ -311,6 +397,7 @@ def export_order_summaries_as_xlsx_task(
     order_summaries_queryset.query = order_summaries_query
 
     field_names = [
+        'Name',
         'Supplier',
         'Brand',
         'SKU',
@@ -329,6 +416,7 @@ def export_order_summaries_as_xlsx_task(
     worksheet.append(field_names)
 
     for order_summary in order_summaries_queryset.values(
+        'product_name',
         'product_supplier',
         'product_brand',
         'product_sku',
@@ -355,6 +443,7 @@ def export_order_summaries_as_xlsx_task(
                     color_variation.append(variation_value)
 
         record = [
+            order_summary['product_name'],
             order_summary['product_supplier'],
             order_summary['product_brand'],
             order_summary['product_sku'],

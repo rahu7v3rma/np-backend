@@ -6,6 +6,7 @@ from django.conf import settings
 from django.contrib.auth import get_user_model
 from django.db.models import (
     Q,
+    Sum,
 )
 from django.test import TestCase
 from django.utils import timezone as django_timezone
@@ -24,6 +25,7 @@ from campaign.models import (
     EmployeeGroupCampaign,
     EmployeeGroupCampaignProduct,
     Order,
+    OrderProduct,
     Organization,
     OrganizationProduct,
     QuickOffer,
@@ -237,6 +239,12 @@ class CampaignViewTestCase(TestCase):
         url = self.employee.get_campaign_site_link(campaign_code)
         self.assertEqual(url, f'{link_prefix}/a')
 
+        # Test URL generation for default (VOUCHER_CODE) authentication method
+        self.employee.login_type = EmployeeAuthEnum.VOUCHER_CODE.name
+        self.employee.save()
+        url = self.employee.get_campaign_site_link(campaign_code)
+        self.assertEqual(url, f'{link_prefix}/c')
+
     def test_request_code_not_found(self):
         response = self.client.get(self.route.format('123456'))
         self.assertEqual(response.status_code, 404)
@@ -275,6 +283,7 @@ class CampaignViewTestCase(TestCase):
                     'login_page_image': None,
                     'login_page_mobile_image': None,
                     'campaign_type': 'NORMAL',
+                    'status': 'ACTIVE',
                 },
             },
         )
@@ -302,6 +311,7 @@ class CampaignViewTestCase(TestCase):
                     'login_page_image': None,
                     'login_page_mobile_image': None,
                     'campaign_type': 'NORMAL',
+                    'status': 'ACTIVE',
                     'main_page_first_banner_title': 'en',
                     'main_page_first_banner_subtitle': 'en',
                     'main_page_first_banner_image': '/media/image',
@@ -343,6 +353,7 @@ class CampaignViewTestCase(TestCase):
                     'login_page_image': None,
                     'login_page_mobile_image': None,
                     'campaign_type': 'NORMAL',
+                    'status': 'ACTIVE',
                 },
             },
         )
@@ -369,6 +380,7 @@ class CampaignViewTestCase(TestCase):
                     'login_page_image': None,
                     'login_page_mobile_image': None,
                     'campaign_type': 'NORMAL',
+                    'status': 'ACTIVE',
                     'main_page_first_banner_title': 'he',
                     'main_page_first_banner_subtitle': 'he',
                     'main_page_first_banner_image': '/media/image',
@@ -1634,8 +1646,8 @@ class EmployeeLoginView(TestCase):
             content,
             {
                 'success': False,
-                'message': 'Bad credentials',
-                'code': 'bad_credentials',
+                'message': 'The details you entered are incorrect, check the details and re-enter',  # noqa: E501
+                'code': 'user_not_registered',
                 'status': 401,
                 'data': {},
             },
@@ -1655,8 +1667,9 @@ class EmployeeLoginView(TestCase):
             content,
             {
                 'success': False,
-                'message': 'Bad credentials',
-                'code': 'bad_credentials',
+                'message': 'The details you entered are '
+                'incorrect, check the details and re-enter',
+                'code': 'user_not_registered',
                 'status': 401,
                 'data': {},
             },
@@ -1951,6 +1964,69 @@ class EmployeeLoginView(TestCase):
             },
         )
 
+    def test_email_not_exist(self):
+        response = self.client.post(
+            self.route.replace('{campaign_code}', self.campaign1.code),
+            format='json',
+            data={
+                'email': 'nonexistent@domain.com',
+            },
+        )
+        self.assertEqual(response.status_code, 401)
+        content = json.loads(response.content.decode(encoding='UTF-8'))
+        self.assertDictEqual(
+            content,
+            {
+                'success': False,
+                'message': 'The details you entered are incorrect, check the details and re-enter',  # noqa: E501
+                'code': 'user_not_registered',
+                'status': 401,
+                'data': {},
+            },
+        )
+
+    def test_phone_number_not_exist(self):
+        response = self.client.post(
+            self.route.replace('{campaign_code}', self.campaign1.code),
+            format='json',
+            data={
+                'phone_number': '0599999999',
+            },
+        )
+        self.assertEqual(response.status_code, 401)
+        content = json.loads(response.content.decode(encoding='UTF-8'))
+        self.assertDictEqual(
+            content,
+            {
+                'success': False,
+                'message': 'The details you entered are incorrect, check the details and re-enter',  # noqa: E501
+                'code': 'user_not_registered',
+                'status': 401,
+                'data': {},
+            },
+        )
+
+    def test_auth_id_not_exist(self):
+        response = self.client.post(
+            self.route.replace('{campaign_code}', self.campaign1.code),  # noqa: E501
+            format='json',
+            data={
+                'auth_id': 'nonexistent_auth_id',
+            },
+        )
+        self.assertEqual(response.status_code, 401)
+        content = json.loads(response.content.decode(encoding='UTF-8'))
+        self.assertDictEqual(
+            content,
+            {
+                'success': False,
+                'message': 'The details you entered are incorrect, check the details and re-enter',  # noqa: E501
+                'code': 'user_not_registered',
+                'status': 401,
+                'data': {},
+            },
+        )
+
 
 class OrderDetailsViewTestCase(TestCase):
     fixtures = ['src/fixtures/cart_orders.json']
@@ -1962,7 +2038,7 @@ class OrderDetailsViewTestCase(TestCase):
         self.employee2 = Employee.objects.all()[1]
 
     def test_remaining_products(self):
-        self.assertEqual(Product.objects.first().remaining_quantity, 198)
+        self.assertEqual(Product.objects.first().remaining_quantity, 200)
 
     def test_request_without_auth(self):
         response = self.client.get(self.route.format(Campaign.objects.first().code))
@@ -2058,7 +2134,7 @@ class OrderDetailsViewTestCase(TestCase):
                                 'name': 'name',
                                 'product_kind': 'PHYSICAL',
                                 'product_type': 'REGULAR',
-                                'remaining_quantity': 198,
+                                'remaining_quantity': 200,
                                 'sku': '123456',
                                 'supplier': {'name': 'supplier1'},
                                 'technical_details': '',
@@ -2119,7 +2195,7 @@ class OrderDetailsViewTestCase(TestCase):
                                 'name': 'name',
                                 'product_kind': 'PHYSICAL',
                                 'product_type': 'REGULAR',
-                                'remaining_quantity': 198,
+                                'remaining_quantity': 200,
                                 'sku': '123456',
                                 'supplier': {'name': 'supplier1'},
                                 'technical_details': '',
@@ -2880,6 +2956,186 @@ class EmployeeOrderViewTestCase(TestCase):
                 }
             },
         )
+
+    @mock.patch('requests.post')
+    @mock.patch('campaign.views.send_order_confirmation_email')
+    def test_voucher_value_lock_after_update(self, mock_send_email, mock_post):
+        # Mock payment response as a fallback
+        mock_post.return_value = self._mock_response(
+            json_data={
+                'status': 1,
+                'data': {
+                    'processToken': 'token',
+                    'processId': 1234,
+                    'authCode': 'abcdefg1234',
+                },
+            }
+        )
+
+        # Step 1: Set up initial conditions for a MONEY product
+        campaign = Campaign.objects.get(pk=1)
+        campaign.campaign_type = Campaign.CampaignTypeEnum.WALLET.name
+        campaign.save()
+
+        employee_group_campaign = EmployeeGroupCampaign.objects.filter(
+            campaign=campaign
+        ).first()
+        employee_group_campaign.budget_per_employee = 1000
+        employee_group_campaign.save()
+        employee = Employee.objects.get(pk=1)
+        # Ensure campaign_employee has sufficient budget
+        campaign_employee = CampaignEmployee.objects.filter(
+            campaign=campaign, employee=employee
+        ).first()
+        campaign_employee.total_budget = 1000
+        campaign_employee.save()
+
+        # Clear existing cart products and add one MONEY product
+        CartProduct.objects.all().delete()
+        egcp = EmployeeGroupCampaignProduct.objects.first()
+        egcp.discount_mode = 'EMPLOYEE'
+        egcp.organization_discount_rate = 0
+        egcp.product_id.product_kind = 'MONEY'
+        egcp.product_id.sale_price = 0  # Ensure no additional cost
+        egcp.product_id.save()
+        CartProduct.objects.create(
+            cart_id=self.cart,
+            product_id=egcp,
+            quantity=1,  # Single unit to keep cost at 500
+        )
+
+        # Step 2: Place the first order
+        campaign_code = campaign.code
+        response = self.client.post(
+            self.route.replace('{campaign_code}', campaign_code),
+            format='json',
+            data={
+                'full_name': 'First Last',
+                'phone_number': '0500000000',
+                'delivery_city': 'City name',
+                'delivery_street': 'Street name',
+                'delivery_street_number': 10,
+            },
+        )
+        self.assertEqual(
+            response.status_code,
+            200,
+            f'Expected status 200, got {response.status_code}: {response.content}',
+        )
+        content = json.loads(response.content.decode(encoding='UTF-8'))
+        self.assertDictEqual(
+            content,
+            {
+                'success': True,
+                'message': 'Order placed successfully.',
+                'status': 200,
+                'data': {'reference': 1},
+            },
+        )
+        order_product = OrderProduct.objects.first()
+        self.assertEqual(order_product.voucher_val, 1000.0)
+        self.assertEqual(employee.used_budget_campaign(campaign=campaign), 1000.0)
+
+        # Verify the voucher value in the first order
+        order1 = Order.objects.get(reference=1)
+        order_product1 = order1.orderproduct_set.first()
+        self.assertEqual(
+            order_product1.voucher_val, 1000.0, 'Expected voucher_val 1000.0'
+        )
+        self.assertEqual(order_product1.quantity, 1)
+        self.assertEqual(order_product1.product_id.pk, egcp.pk)
+
+        campaign_employee.total_budget = (
+            2000  # Since the used budget is high, this needs to be increased.
+        )
+        campaign_employee.save()
+        # Step 3: Update the voucher value (change budget)
+        egcp.discount_mode = 'EMPLOYEE'
+        egcp.organization_discount_rate = 10  # Update the discount rate
+        egcp.save()
+        # Step 4: Place a second order
+        # Recreate cart for the second order
+        CartProduct.objects.all().delete()
+        CartProduct.objects.create(
+            cart_id=self.cart,
+            product_id=egcp,
+            quantity=1,
+        )
+
+        response = self.client.post(
+            self.route.replace('{campaign_code}', campaign_code),
+            format='json',
+            data={
+                'full_name': 'First Last',
+                'phone_number': '0500000000',
+                'delivery_city': 'City name',
+                'delivery_street': 'Street name',
+                'delivery_street_number': 10,
+            },
+        )
+        self.assertEqual(
+            response.status_code,
+            200,
+            f'Expected status 200, got {response.status_code}: {response.content}',
+        )
+        content = json.loads(response.content.decode(encoding='UTF-8'))
+        self.assertDictEqual(
+            content,
+            {
+                'success': True,
+                'message': 'Order placed successfully.',
+                'status': 200,
+                'data': {'reference': 2},
+            },
+        )
+
+        # Verify the voucher value in the second order
+        order2 = Order.objects.get(reference=2)
+        order_product2 = order2.orderproduct_set.first()
+        self.assertEqual(
+            order_product2.voucher_val, 1111.1, 'Expected voucher_val 1111.1'
+        )
+        self.assertEqual(order_product2.quantity, 1)
+        self.assertEqual(order_product2.product_id.product_id.product_kind, 'MONEY')
+        self.assertEqual(order_product2.product_id.pk, egcp.pk)
+
+        # Step 5: Verify the first order's voucher value is unchanged
+        order1 = Order.objects.get(reference=1)  # Refresh order1
+        order_product1 = order1.orderproduct_set.first()
+        self.assertEqual(
+            order_product1.voucher_val,
+            1000.0,
+            'Expected voucher_val 1000.0 to remain unchanged',
+        )
+
+        # Step 6: Simulate order summary data
+        order_products = (
+            OrderProduct.objects.filter(product_id=egcp)
+            .values('voucher_val')
+            .annotate(total_quantity=Sum('quantity'))
+        )
+
+        expected_summary = [
+            {'voucher_val': 1000.0, 'total_quantity': 1},
+            {'voucher_val': 1111.1, 'total_quantity': 1},
+        ]
+        self.assertEqual(len(order_products), 2, 'Expected two voucher value groups')
+        self.assertListEqual(
+            [
+                {
+                    'voucher_val': float(op['voucher_val']),
+                    'total_quantity': op['total_quantity'],
+                }
+                for op in order_products
+            ],
+            expected_summary,
+            'Order summary mismatch',
+        )
+
+        # Verify email was sent for both orders
+        self.assertEqual(mock_send_email.call_count, 2)
+        mock_send_email.assert_any_call(order1)
+        mock_send_email.assert_any_call(order2)
 
 
 class CartAddProductTestCase(TestCase):
@@ -5661,3 +5917,52 @@ class CampaignEmployeeSaveTestCase(TestCase):
         )
 
         self.assertEqual(campaign_employee.total_budget, egc.budget_per_employee)
+
+
+class TestCampaignAdminActions(TestCase):
+    fixtures = ['src/fixtures/inventory.json', 'src/fixtures/campaign.json']
+
+    def setUp(self):
+        get_user_model().objects.create_superuser(
+            username='admin', email='admin@test.com', password='password'
+        )
+
+    def test_change_campaign_status_to_preview(self):
+        self.client.login(username='admin', password='password')
+        campaign1 = Campaign.objects.first()
+        campaign2 = Campaign.objects.last()
+
+        data = {
+            'action': 'preview_campaign',
+            '_selected_action': [campaign1.id, campaign2.id],
+        }
+        change_url = '/admin/campaign/campaign/'
+        self.client.post(change_url, data, follow=True)
+
+        # get the new data
+        campaign1.refresh_from_db()
+        campaign2.refresh_from_db()
+
+        # ckeck the status
+        self.assertEqual(campaign1.status, 'PREVIEW')
+        self.assertEqual(campaign2.status, 'PREVIEW')
+
+    def test_change_campaign_status_to_pending_approval(self):
+        self.client.login(username='admin', password='password')
+        campaign1 = Campaign.objects.first()
+        campaign2 = Campaign.objects.last()
+
+        data = {
+            'action': 'pending_approval_campaign',
+            '_selected_action': [campaign1.id, campaign2.id],
+        }
+        change_url = '/admin/campaign/campaign/'
+        self.client.post(change_url, data, follow=True)
+
+        # get the new data
+        campaign1.refresh_from_db()
+        campaign2.refresh_from_db()
+
+        # ckeck the status
+        self.assertEqual(campaign1.status, 'PENDING_APPROVAL')
+        self.assertEqual(campaign2.status, 'PENDING_APPROVAL')

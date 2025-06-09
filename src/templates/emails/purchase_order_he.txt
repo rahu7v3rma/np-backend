@@ -40,7 +40,7 @@
 {% for product in purchase_order_products %}
 {{ product.product_id.sku }} :מקט מוצר
 {{ product.product_id.reference }} :ברקוד
-{{ product.product_id.name }} :שם מוצר
+{{ product.product_id.name_he }} :שם מוצר
 {{ product.quantity_ordered }} :כמות מוזמנת
 -------------------------------------------
 {% endfor %}

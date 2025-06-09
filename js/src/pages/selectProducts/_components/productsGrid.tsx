@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 
 import { useNPConfig } from '@/contexts/npConfig';
 import { getProducts } from '@/services/api';
@@ -9,7 +9,6 @@ import useViewportEntry from '../_hooks/useViewportEntry';
 import Filter from './filter';
 import Loader from './loader';
 import ProductCard from './productCard';
-import SelectionContainer from './selectionContainer';
 
 interface Tab {
   id: number;
@@ -17,34 +16,29 @@ interface Tab {
   key: number;
   label: string;
   budget: number;
+  company_cost: number;
   selectedProductIds?: number[];
-}
-interface DiscountRate {
-  id: number;
-  rate: number;
 }
 interface SelectedProductDetails {
   product_id: number;
   discount_mode: string;
   organization_discount_rate?: number | undefined;
 }
-interface DiscountMode {
-  id: number;
-  mode: string;
-}
 interface Props {
   formId: number;
   organizationId: number;
   budget: number;
+  company_cost: number;
   allTabs: Tab[];
-  default_discount: string;
+  _default_discount: string;
 }
 const ProductComponent = ({
   formId,
   organizationId,
   budget,
+  company_cost,
   allTabs,
-  default_discount,
+  _default_discount,
 }: Props) => {
   const { config } = useNPConfig();
   const currentWizardStep = config?.currentWizardStep || '-1';
@@ -61,7 +55,7 @@ const ProductComponent = ({
     brandId?: number;
     supplierId?: number;
     categoryId?: number;
-    tagId?: number;
+    tagIds?: number[];
     employeeGroupId?: number;
     productKind?: string;
     quickOfferId?: number;
@@ -74,15 +68,20 @@ const ProductComponent = ({
   const [hasMore, setHasMore] = useState(false);
   const [selectedProductIds, setSelectedProductIds] = useState<number[]>([]);
   const [selectAll, setSelectAll] = useState<boolean>(false);
-  const [discountMode, setDiscountMode] = useState<DiscountMode[]>([]);
-  const [organizationDiscountRate, setOrganizationDiscountRate] = useState<
-    DiscountRate[]
-  >([]);
+  const [productCompanyCosts, setProductCompanyCosts] = useState<{
+    [productId: number]: number;
+  }>({});
 
   const gridEndRef = useRef<HTMLDivElement>(null);
   const baseSPAAssetsUrl = config?.baseSPAAssetsUrl;
   const [updatedTabs, setUpdatedTabs] = useState<Tab[]>([]);
   const [campaignId, setCampaignId] = useState<number | undefined>(undefined);
+
+  const campaignType = useMemo(() => {
+    return config?.data
+      ? JSON.parse(config?.data.replace(/&quot;/g, '"') || '{}')?.type || null
+      : null;
+  }, [config]);
 
   useEffect(() => {
     if (config?.data !== '{}') {
@@ -132,40 +131,17 @@ const ProductComponent = ({
         if (productIds) {
           setSelectedProductIds(productIds);
         }
-        const initialDiscountRates = productDetails.map(
-          (product: SelectedProductDetails) => {
-            return {
-              id: product['product_id'],
-              rate: product?.organization_discount_rate || 0,
-            };
+
+        // Initialize individual product company costs if they exist
+        const initialCompanyCosts: { [productId: number]: number } = {};
+        productDetails.forEach(
+          (product: SelectedProductDetails & { company_cost?: number }) => {
+            if (product.company_cost !== undefined) {
+              initialCompanyCosts[product.product_id] = product.company_cost;
+            }
           },
         );
-        setOrganizationDiscountRate((prev) => [
-          ...prev,
-          ...initialDiscountRates.filter(
-            (rate: DiscountRate) =>
-              rate !== null &&
-              !organizationDiscountRate.some(
-                (existingRate) => existingRate.id === rate.id,
-              ),
-          ),
-        ]);
-        const initialDiscountMode = productDetails.map(
-          (product: SelectedProductDetails) => {
-            return {
-              id: product['product_id'],
-              mode: product['discount_mode'] || '',
-            };
-          },
-        );
-        setDiscountMode((prev) => [
-          ...prev,
-          ...initialDiscountMode.filter(
-            (mode: DiscountMode) =>
-              mode !== null &&
-              !prev.some((existingMode) => existingMode.id === mode.id),
-          ),
-        ]);
+        setProductCompanyCosts(initialCompanyCosts);
       }
     }
   }, [config, formId]);
@@ -189,7 +165,7 @@ const ProductComponent = ({
           queryParams.brandId,
           queryParams.supplierId,
           queryParams.categoryId,
-          queryParams.tagId,
+          queryParams.tagIds,
           campaignId,
           queryParams.employeeGroupId,
           queryParams.productKind,
@@ -217,7 +193,7 @@ const ProductComponent = ({
               queryParams.brandId,
               queryParams.supplierId,
               queryParams.categoryId,
-              queryParams.tagId,
+              queryParams.tagIds,
               campaignId,
               queryParams.employeeGroupId,
               queryParams.productKind,
@@ -236,24 +212,50 @@ const ProductComponent = ({
           productsPage.has_more = false;
         }
 
+        // Filter products by Company Cost Per Employee (local filtering)
+        if (
+          queryParams.organizationPriceMin ||
+          queryParams.organizationPriceMax
+        ) {
+          productsPage.page_data = productsPage.page_data.filter((product) => {
+            const productCompanyCost = getProductCompanyCost(product.id);
+
+            if (
+              queryParams.organizationPriceMin &&
+              productCompanyCost < queryParams.organizationPriceMin
+            ) {
+              return false;
+            }
+            if (
+              queryParams.organizationPriceMax &&
+              productCompanyCost > queryParams.organizationPriceMax
+            ) {
+              return false;
+            }
+            return true;
+          });
+        }
+
         // apply the profit filter
         if (queryParams.profitMax !== undefined) {
-          productsPage.page_data = productsPage.page_data.filter(
-            (product) =>
-              ((product.calculated_price - product.total_cost) /
-                product.calculated_price) *
+          productsPage.page_data = productsPage.page_data.filter((product) => {
+            const productCompanyCost = getProductCompanyCost(product.id);
+            return (
+              ((productCompanyCost - product.total_cost) / productCompanyCost) *
                 100 <=
-              (queryParams.profitMax as number),
-          );
+              (queryParams.profitMax as number)
+            );
+          });
         }
         if (queryParams.profitMin !== undefined) {
-          productsPage.page_data = productsPage.page_data.filter(
-            (product) =>
-              ((product.calculated_price - product.total_cost) /
-                product.calculated_price) *
+          productsPage.page_data = productsPage.page_data.filter((product) => {
+            const productCompanyCost = getProductCompanyCost(product.id);
+            return (
+              ((productCompanyCost - product.total_cost) / productCompanyCost) *
                 100 >=
-              (queryParams.profitMin as number),
-          );
+              (queryParams.profitMin as number)
+            );
+          });
         }
 
         // sort each product's images array so that the main image is first
@@ -290,47 +292,15 @@ const ProductComponent = ({
         setLoading(false);
       }
     },
-    [queryParams, organizationId, selectAll, campaignId],
+    [
+      queryParams,
+      organizationId,
+      selectAll,
+      campaignId,
+      productCompanyCosts,
+      company_cost,
+    ],
   );
-
-  useEffect(() => {
-    const initialDiscountRates = products.map((product) => {
-      if (product.product_kind === 'MONEY') {
-        return {
-          id: product.id,
-          rate: product.client_discount_rate || 0,
-        };
-      }
-      return null;
-    });
-    setOrganizationDiscountRate((prev) => [
-      ...prev,
-      ...initialDiscountRates.filter(
-        (rate): rate is DiscountRate =>
-          rate !== null &&
-          !organizationDiscountRate.some(
-            (existingRate) => existingRate.id === rate.id,
-          ),
-      ),
-    ]);
-    const initialDiscountMode = products.map((product) => {
-      if (product.product_kind === 'MONEY') {
-        return {
-          id: product.id,
-          mode: default_discount || '',
-        };
-      }
-      return null;
-    });
-    setDiscountMode((prev) => [
-      ...prev,
-      ...initialDiscountMode.filter(
-        (mode): mode is DiscountMode =>
-          mode !== null &&
-          !prev.some((existingMode) => existingMode.id === mode.id),
-      ),
-    ]);
-  }, [products, default_discount, organizationDiscountRate]);
 
   useEffect(() => {
     // fetch products on page mount
@@ -353,8 +323,8 @@ const ProductComponent = ({
   }, []);
 
   const onProductClick = useCallback(
-    (productId: number) => {
-      if (selectedProductIds.includes(productId)) {
+    (productId: number, selected: boolean) => {
+      if (!selected) {
         const ids = selectedProductIds.filter(
           (id) => id !== productId && id !== undefined,
         );
@@ -362,7 +332,9 @@ const ProductComponent = ({
         setSearchParam('productSelectionIds', ids.join(','));
       } else {
         const ids = [
-          ...selectedProductIds.filter((id) => id !== undefined),
+          ...selectedProductIds.filter(
+            (id) => id !== undefined && id !== productId,
+          ),
           productId,
         ];
         setSelectedProductIds(ids);
@@ -392,7 +364,7 @@ const ProductComponent = ({
       brandId?: number,
       supplierId?: number,
       categoryId?: number,
-      tagId?: number,
+      tagIds?: number[],
       employeeGroupId?: number,
       productKind?: string,
       quickOfferId?: number,
@@ -412,7 +384,7 @@ const ProductComponent = ({
         brandId,
         supplierId,
         categoryId,
-        tagId,
+        tagIds,
         employeeGroupId,
         productKind,
         quickOfferId,
@@ -471,66 +443,6 @@ const ProductComponent = ({
     setSelectAll(false);
   };
 
-  const handleDiscountModeChange = (
-    productId: number,
-    e: React.ChangeEvent<HTMLSelectElement>,
-  ) => {
-    const inputValue = e.target.value;
-    setDiscountMode((prev) => {
-      const updatedModes = [...prev];
-      const modeIndex = updatedModes.findIndex((mode) => mode.id === productId);
-
-      if (modeIndex !== -1) {
-        updatedModes[modeIndex] = {
-          id: productId,
-          mode: inputValue,
-        };
-      } else {
-        updatedModes.push({ id: productId, mode: inputValue });
-      }
-
-      return updatedModes;
-    });
-  };
-
-  const handleOrganizationDiscountRateChange = (
-    productId: number,
-    e: React.ChangeEvent<HTMLInputElement>,
-  ) => {
-    const inputValue = e.target.value;
-    if (inputValue === '') {
-      setOrganizationDiscountRate((prevRates) => {
-        const updatedRates = prevRates.map((rate) =>
-          rate.id === productId ? { ...rate, rate: 0 } : rate,
-        );
-        return updatedRates;
-      });
-      return;
-    }
-    let newRate = parseFloat(inputValue);
-    if (newRate > 100) {
-      newRate = parseFloat(inputValue.slice(0, 2)); // Keep only the first two digits
-    }
-    if (newRate >= 0 && newRate <= 100) {
-      setOrganizationDiscountRate((prevRates) => {
-        const updatedRates = [...prevRates];
-        const rateIndex = updatedRates.findIndex(
-          (rate) => rate.id === productId,
-        );
-
-        if (rateIndex !== -1) {
-          updatedRates[rateIndex] = {
-            id: productId,
-            rate: newRate,
-          };
-        } else {
-          updatedRates.push({ id: productId, rate: newRate });
-        }
-
-        return updatedRates;
-      });
-    }
-  };
   // "subscribe" to events of the component at the end of the products grid
   // coming into the viewport so we can load the next products page if there is
   // one
@@ -554,6 +466,33 @@ const ProductComponent = ({
     }
   }, [getSearchParam]);
 
+  const handleValueChange = useCallback(
+    (_product_id: number, _value: number) => {
+      // Simplified voucher logic - Company Cost Per Employee is now used directly
+      // No longer need to calculate organization discount rates
+    },
+    [],
+  );
+
+  // Handler to update individual product company cost
+  const handleProductCompanyCostChange = useCallback(
+    (productId: number, newCost: number) => {
+      setProductCompanyCosts((prev) => ({
+        ...prev,
+        [productId]: newCost,
+      }));
+    },
+    [],
+  );
+
+  // Function to get company cost for a specific product (individual or default)
+  const getProductCompanyCost = useCallback(
+    (productId: number) => {
+      return productCompanyCosts[productId] ?? company_cost;
+    },
+    [productCompanyCosts, company_cost],
+  );
+
   return (
     <>
       <div className="flex gap-6">
@@ -561,6 +500,7 @@ const ProductComponent = ({
           <Filter
             applyFilter={handleApplyFilter}
             budget={budget}
+            company_cost={company_cost}
             selectedProductIds={selectedProductIds}
             products={products}
             baseSPAAssetsUrl={baseSPAAssetsUrl}
@@ -579,70 +519,32 @@ const ProductComponent = ({
         ) : (
           <div className="grid grid-cols-3 lg:grid-cols-4 2xl:grid-cols-5 gap-4">
             {products.map((p) => {
-              const discount = discountMode.find((r) => r.id === p.id);
-              const organizationDiscount = organizationDiscountRate.find(
-                (r) => r.id === p.id,
-              );
               return (
-                <SelectionContainer
-                  key={`product-selection-${p.id}`}
-                  selected={selectedProductIds.includes(p.id)}
-                  onClick={() => onProductClick(p.id)}
-                >
-                  <ProductCard
-                    key={`product-${p.id}`}
-                    image={p.images.length > 0 ? p.images[0].image : undefined}
-                    total_cost={p.total_cost}
-                    google_price={p.google_price}
-                    brandImage={p.brand.logo_image}
-                    name={p.name}
-                    organization_price={
-                      discount?.mode !== 'EMPLOYEE'
-                        ? parseFloat(
-                            (
-                              (p.product_kind == 'MONEY'
-                                ? budget
-                                : p.calculated_price) -
-                              (organizationDiscount?.rate
-                                ? (Number(organizationDiscount.rate) / 100) *
-                                  (p.product_kind == 'MONEY'
-                                    ? budget
-                                    : p.calculated_price)
-                                : 0)
-                            ).toFixed(2),
-                          )
-                        : p.product_kind == 'MONEY'
-                          ? budget
-                          : p.calculated_price
-                    }
-                    value_price={
-                      p.product_kind === 'MONEY'
-                        ? discount?.mode === 'EMPLOYEE'
-                          ? parseFloat(
-                              (
-                                budget /
-                                (1 -
-                                  Number(organizationDiscount?.rate ?? 0) / 100)
-                              ).toFixed(2),
-                            )
-                          : budget
-                        : 0
-                    }
-                    voucher_type={p.voucher_type}
-                    discountMode={discount?.mode || default_discount}
-                    handleDiscountModeChange={(newVal) =>
-                      handleDiscountModeChange(p.id, newVal)
-                    }
-                    productKind={p.product_kind}
-                    organizationDiscountRate={organizationDiscount?.rate || 0}
-                    handleOrganizationDiscountRateChange={(newRate) =>
-                      handleOrganizationDiscountRateChange(p.id, newRate)
-                    }
-                    ordered_quantity={p.ordered_quantity}
-                    id={p.id}
-                    setProducts={setProducts}
-                  />
-                </SelectionContainer>
+                <ProductCard
+                  key={`product-${p.id}`}
+                  image={p.images.length > 0 ? p.images[0].image : undefined}
+                  total_cost={p.total_cost}
+                  google_price={p.google_price}
+                  brandImage={p.brand.logo_image}
+                  name={p.name}
+                  organization_price={getProductCompanyCost(p.id)}
+                  value_price={
+                    p.product_kind === 'MONEY' ? getProductCompanyCost(p.id) : 0
+                  }
+                  voucher_type={p.voucher_type}
+                  discountMode="EMPLOYEE"
+                  _handleDiscountModeChange={() => {}}
+                  productKind={p.product_kind}
+                  handleValueChange={handleValueChange}
+                  handleProductCompanyCostChange={
+                    handleProductCompanyCostChange
+                  }
+                  ordered_quantity={p.ordered_quantity}
+                  id={p.id}
+                  _setProducts={setProducts}
+                  is_selected={selectedProductIds.includes(p.id)}
+                  onProductClick={onProductClick}
+                />
               );
             })}
             {!loading && <div ref={gridEndRef} className="w-[1px] h-[1px]" />}
@@ -651,25 +553,21 @@ const ProductComponent = ({
       </div>
       <input
         type="hidden"
-        name={`${currentWizardStep}-${formId.toString()}-campaign_data`}
+        name={`${currentWizardStep}-${formId.toString()}-${campaignType === 'quick_offer' ? 'products' : 'campaign_data'}`}
         value={JSON.stringify({
           selected_products: selectedProductIds,
-          discount_modes: discountMode.reduce(
-            (acc, curr) => {
-              acc[curr.id] = curr.mode;
+          discount_modes: selectedProductIds.reduce(
+            (acc, productId) => {
+              acc[productId] = 'EMPLOYEE';
               return acc;
             },
-            // even though curr.id is a number, object property names in js are
-            // always strings
             {} as { [key: string]: string },
           ),
-          discount_rates: organizationDiscountRate.reduce(
-            (acc, curr) => {
-              acc[curr.id] = curr.rate;
+          company_costs: selectedProductIds.reduce(
+            (acc, productId) => {
+              acc[productId] = getProductCompanyCost(productId);
               return acc;
             },
-            // even though curr.id is a number, object property names in js are
-            // always strings
             {} as { [key: string]: number },
           ),
         })}

@@ -1,7 +1,12 @@
 from enum import Enum
 import uuid
 
-from django.core.validators import MaxLengthValidator, MaxValueValidator, validate_email
+from django.core.validators import (
+    MaxLengthValidator,
+    MaxValueValidator,
+    ValidationError,
+    validate_email,
+)
 from django.db import models
 from django.db.models.functions import Cast, Round
 from django.utils.translation import gettext_lazy as _
@@ -12,6 +17,18 @@ from common.models import BaseModelMixin
 from lib.phone_utils import convert_phone_number_to_long_form, validate_phone_number
 from lib.storage import RandomNameImageField, RandomNameImageFieldSVG
 from logistics.models import LogisticsCenterStockSnapshotLine
+
+
+def validate_sku_length(value, product_kind=None):
+    """
+    Validates SKU length based on product kind.
+    For bundle products, no length limit is applied.
+    For all other products, SKU must be 22 characters or less.
+    """
+    if product_kind == Product.ProductKindEnum.BUNDLE.name:
+        return  # Skip validation for bundle products
+    if len(value) > 22:
+        raise ValidationError('SKU must be at most 22 characters long')
 
 
 class Product(models.Model):
@@ -65,8 +82,18 @@ class Product(models.Model):
     description = models.TextField()
     # add max length as a validator so we don't enforce it on pre-existing products
     sku = models.CharField(
-        max_length=255, unique=True, validators=[MaxLengthValidator(22)]
+        max_length=255,
+        unique=True,
+        # Use a simple MaxLengthValidator for the database level
+        # The custom validation will be handled in the clean method
+        validators=[MaxLengthValidator(255)],
     )
+
+    def clean(self):
+        super().clean()
+        # Apply our custom validation in the clean method
+        validate_sku_length(self.sku, self.product_kind)
+
     link = models.TextField(null=True, blank=True)
     active = models.BooleanField(default=True)
     cost_price = models.IntegerField()
@@ -169,12 +196,6 @@ class Product(models.Model):
             self.cost_price = sum(
                 [bi.product.cost_price * bi.quantity for bi in bundled_items]
             )
-            self.delivery_price = sum(
-                [(bi.product.delivery_price or 0) * bi.quantity for bi in bundled_items]
-            )
-            self.sale_price = sum(
-                [(bi.product.sale_price or 0) * bi.quantity for bi in bundled_items]
-            )
             self.google_price = sum(
                 [(bi.product.google_price or 0) * bi.quantity for bi in bundled_items]
             )
@@ -193,6 +214,59 @@ class Product(models.Model):
             # remove all bundled items if this is not a bundle (may have been
             # changed now)
             self.bundled_items.all().delete()
+
+    def create_bundle_items_from_sku(self, sku_string):
+        """
+        Creates ProductBundleItem entries from a bundle SKU string.
+        The SKU string should be in the format:
+            'product_sku|quantity,product_sku|quantity,...'
+
+        Args:
+            sku_string (str): The bundle SKU string to parse
+
+        Returns:
+            list: List of created ProductBundleItem objects
+
+        Raises:
+            ValueError: If the SKU string format is invalid or if
+            referenced products don't exist
+        """
+        if not self.product_kind == Product.ProductKindEnum.BUNDLE.name:
+            raise ValueError('This method can only be called on bundle products')
+
+        # Clear existing bundle items
+        self.bundled_items.all().delete()
+
+        created_items = []
+
+        # Split the SKU string into individual product entries
+        product_entries = sku_string.split(',')
+
+        for entry in product_entries:
+            try:
+                # Split each entry into SKU and quantity
+                product_sku, quantity_str = entry.split('|')
+                quantity = int(quantity_str)
+
+                # Find the product with this SKU
+                try:
+                    product = Product.objects.get(sku=product_sku)
+                except Product.DoesNotExist:
+                    raise ValueError(f'Product with SKU {product_sku} does not exist')
+
+                # Create the bundle item
+                bundle_item = ProductBundleItem.objects.create(
+                    bundle=self, product=product, quantity=quantity
+                )
+                created_items.append(bundle_item)
+
+            except ValueError as e:
+                # Re-raise if it's our custom error
+                if 'Product with SKU' in str(e):
+                    raise
+                # Otherwise, the format was invalid
+                raise ValueError("Invalid SKU string format. Expected 'sku|quantity'")
+        return created_items
 
     @property
     def main_image(self):
@@ -219,7 +293,7 @@ class Product(models.Model):
 
     @property
     def remaining_quantity(self):
-        return max(0, self.product_quantity - self.ordered_quantity)
+        return max(0, self.product_quantity)
 
     def __str__(self):
         return self.name

@@ -2,6 +2,7 @@ import os
 from typing import Any
 import uuid
 
+from dal import autocomplete
 from django import forms
 from django.conf import settings
 from django.contrib import admin, messages
@@ -38,6 +39,7 @@ from inventory.models import (
     Variation,
 )
 from lib.admin import ImportableExportableAdmin, RecordImportError
+from lib.filters import MultiSelectFilter
 from services.email import send_stock_alert_email
 
 from .admin_actions import ProductActionsMixin
@@ -259,16 +261,31 @@ class CategoryInline(NestedStackedInline):
     model = Category.product_set.through
     extra = 1
 
+    def get_formset(self, request, obj=None, **kwargs):
+        formset = super().get_formset(request, obj, **kwargs)
+        formset.form.base_fields['category_id'].widget = autocomplete.ModelSelect2(
+            url='category-product-autocomplete'
+        )
+        return formset
+
 
 class TagInline(NestedStackedInline):
     model = Tag.product_set.through
     extra = 1
+
+    def get_formset(self, request, obj=None, **kwargs):
+        formset = super().get_formset(request, obj, **kwargs)
+        formset.form.base_fields['tag_id'].widget = autocomplete.ModelSelect2(
+            url='tag-product-autocomplete'
+        )
+        return formset
 
 
 class BundledProductInlineForm(forms.ModelForm):
     class Meta:
         model = ProductBundleItem
         fields = '__all__'
+        widgets = {'product': autocomplete.ModelSelect2(url='product-autocomplete')}
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
@@ -282,6 +299,10 @@ class ProductAdminForm(forms.ModelForm):
     class Meta:
         model = Product
         fields = '__all__'
+        widgets = {
+            'supplier': autocomplete.ModelSelect2(url='supplier-product-autocomplete'),
+            'brand': autocomplete.ModelSelect2(url='brand-product-autocomplete'),
+        }
 
     def full_clean(self):
         # disable the required flag for fields that are calculated
@@ -363,6 +384,20 @@ class VariationInline(NestedStackedInline):
     inlines = [ProductTextVariationInline, ProductColorVariationImageInline]
     formset = BaseProductVariationInlineFormset
 
+    def get_formset(self, request, obj=None, **kwargs):
+        formset = super().get_formset(request, obj, **kwargs)
+        formset.form.base_fields['variation'].widget = autocomplete.ModelSelect2(
+            url='variation-product-autocomplete'
+        )
+        return formset
+
+
+class ProductTagsFilter(MultiSelectFilter):
+    custom_title = 'tags'
+
+    def lookups(self, request, model_admin):
+        return [(tag.id, tag.name) for tag in Tag.objects.all()]
+
 
 @admin.register(Product)
 class ProductAdmin(ProductActionsMixin, ImportableExportableAdmin, NestedModelAdmin):
@@ -399,7 +434,6 @@ class ProductAdmin(ProductActionsMixin, ImportableExportableAdmin, NestedModelAd
         'active',
         'product_type',
         'product_quantity',
-        'remaining_quantity',
         'cost_price',
         'sku',
         'product_kind',
@@ -411,7 +445,7 @@ class ProductAdmin(ProductActionsMixin, ImportableExportableAdmin, NestedModelAd
     )
     list_filter = (
         'categories',
-        'tags',
+        ('tags', ProductTagsFilter),
         ('brand__name', custom_titled_filter('brand')),
         ('supplier__name', custom_titled_filter('supplier')),
         PriceFilter,
@@ -700,16 +734,19 @@ class ProductAdmin(ProductActionsMixin, ImportableExportableAdmin, NestedModelAd
             product_id=obj
         ).values_list('employee_group_campaign_id__campaign', flat=True)
         campaigns = Campaign.objects.filter(
-            id__in=campaign_ids, status=Campaign.CampaignStatusEnum.ACTIVE.name
+            id__in=campaign_ids,
+            status__in=[
+                Campaign.CampaignStatusEnum.ACTIVE.name,
+                Campaign.CampaignStatusEnum.PREVIEW.name,
+            ],
         ).values_list('name', flat=True)
         active_campaign_str = ', '.join(campaigns)
         return active_campaign_str
 
     def changelist_view(self, request, extra_context=None):
-        products = Product.objects.annotate(
-            remaining_quantity_db=models.F('product_quantity')
-            - models.Sum('employeegroupcampaignproduct__orderproduct__quantity')
-        ).filter(remaining_quantity_db__lte=settings.STOCK_LIMIT_THRESHOLD)
+        products = Product.objects.filter(
+            product_quantity__lte=settings.STOCK_LIMIT_THRESHOLD
+        )
         if len(products):
             self.message_user(
                 request,
@@ -732,7 +769,13 @@ class ProductAdmin(ProductActionsMixin, ImportableExportableAdmin, NestedModelAd
         return super().changelist_view(request, extra_context)
 
     class Media:
-        js = ('js/variation_inline_limit.js',)
+        js = (
+            'admin/js/vendor/jquery/jquery.js',
+            'admin/js/jquery.init.js',
+            'admin/js/vendor/select2/select2.full.js',
+            'admin/js/autocomplete.js',
+            'js/variation_inline_limit.js',
+        )
 
     @staticmethod
     def get_variations_list():
@@ -781,6 +824,8 @@ class CategoryProductInline(admin.TabularInline):
 @admin.register(Category)
 class CategoryAdmin(TranslationAdmin):
     list_display = ('name',)
+    search_fields = ('name',)
+    change_list_template = 'category/category_change_list.html'
 
     def get_inlines(self, request, obj):
         return [CategoryProductInline] if obj else []

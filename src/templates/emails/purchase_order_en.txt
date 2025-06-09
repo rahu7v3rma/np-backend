@@ -40,7 +40,7 @@ Roni
 {% for product in purchase_order_products %}
 Product SKU: {{ product.product_id.sku }}
 Product barcode: {{ product.product_id.reference }}
-Product Name: {{ product.product_id.name }}
+Product Name: {{ product.product_id.name_he }}
 Quantity Ordered: {{ product.quantity_ordered }}
 ------------------------------------------------
 {% endfor %}

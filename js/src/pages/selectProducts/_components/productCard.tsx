@@ -1,10 +1,29 @@
+import { Checkbox } from '@headlessui/react';
 import { CheckIcon, PencilIcon, XMarkIcon } from '@heroicons/react/20/solid';
-import { Dispatch, SetStateAction, useEffect, useMemo, useState } from 'react';
+import {
+  Dispatch,
+  SetStateAction,
+  useCallback,
+  useEffect,
+  useMemo,
+  useState,
+} from 'react';
 import { LazyLoadImage } from 'react-lazy-load-image-component';
 
 import { useNPConfig } from '@/contexts/npConfig';
-import { updateOrganizationProduct } from '@/services/api';
+import { updateEmployeeGroupCampaignProduct } from '@/services/api';
 import { Product } from '@/types/product';
+
+const formatWord = (word: string) => {
+  return word.charAt(0).toUpperCase() + word.slice(1).toLowerCase();
+};
+
+interface EditablePriceComponentProps {
+  value: number | string;
+  label: string;
+  onSave: (newValue: number | string) => void;
+  notEditable?: boolean;
+}
 
 type Props = {
   name: string;
@@ -20,21 +39,20 @@ type Props = {
   value_price?: number;
   voucher_type: string | null;
   discountMode: string;
-  handleDiscountModeChange: (e: React.ChangeEvent<HTMLSelectElement>) => void;
+  _handleDiscountModeChange: (e: React.ChangeEvent<HTMLSelectElement>) => void;
   productKind: string;
-  organizationDiscountRate: number;
-  handleOrganizationDiscountRateChange: (
-    e: React.ChangeEvent<HTMLInputElement>,
-  ) => void;
+  handleValueChange: (product_id: number, value: number) => void;
+  handleProductCompanyCostChange?: (productId: number, newCost: number) => void;
   ordered_quantity?: number;
   id: number;
-  setProducts: Dispatch<SetStateAction<Product[]>>;
+  _setProducts: Dispatch<SetStateAction<Product[]>>;
+  onProductClick: (product_id: number, selected: boolean) => void;
+  is_selected?: boolean;
 };
 
 interface ProductPrice {
   label: string;
   value: number | string;
-  editable?: boolean;
   alwaysShow?: boolean;
 }
 
@@ -52,49 +70,38 @@ export default function ProductCard({
   value_price = 0,
   voucher_type,
   discountMode,
-  handleDiscountModeChange,
+  _handleDiscountModeChange,
   productKind,
-  organizationDiscountRate,
-  handleOrganizationDiscountRateChange,
+  handleValueChange,
+  handleProductCompanyCostChange,
   ordered_quantity = 0,
   id,
-  setProducts,
+  _setProducts,
+  onProductClick,
+  is_selected = false,
 }: Props) {
   const { config } = useNPConfig();
   const baseSPAAssetsUrl = config?.baseSPAAssetsUrl;
-  const organizationId = JSON.parse(
-    config?.data.replace(/&quot;/g, '"') || '{}',
-  )?.organization_id;
-
+  const configData = JSON.parse(config?.data.replace(/&quot;/g, '"') || '{}');
+  const organizationId = configData?.organization_id;
+  const status = configData?.campaign_status;
   const [productPrices, setProductPrices] = useState<ProductPrice[]>([]);
-  const [editOrganizationPrice, setEditOrganizationPrice] = useState(false);
-  const [organizationProductPrice, setOrganizationProductPrice] =
-    useState(organization_price);
+  const [selected, setSelected] = useState<boolean>(false);
+
+  useEffect(() => {
+    setSelected(is_selected);
+  }, [is_selected]);
 
   useEffect(() => {
     const product_prices: ProductPrice[] = [
       { label: 'EXTRA', value: additionalPrice },
       { label: 'Google Cost', value: google_price },
-      { label: 'Organization Price', value: organization_price },
+      { label: 'Company Cost Per Employee', value: organization_price },
+      { label: 'Discount to', value: 'Employee', alwaysShow: true },
       { label: 'Value', value: value_price },
       { label: 'Total Cost', value: total_cost },
     ];
-    if (productKind == 'MONEY') {
-      product_prices.push(
-        {
-          label: "Org'Discount Rate",
-          value: organizationDiscountRate,
-          editable: true,
-          alwaysShow: true,
-        },
-        {
-          label: 'Discount to',
-          value: discountMode,
-          editable: true,
-          alwaysShow: true,
-        },
-      );
-    }
+
     product_prices.sort((a, b) => {
       if (!a.value && !a.alwaysShow) return -1;
       if (!b.value && !b.alwaysShow) return 1;
@@ -110,7 +117,7 @@ export default function ProductCard({
     value_price,
     total_cost,
     discountMode,
-    organizationDiscountRate,
+    status,
   ]);
 
   const profit = useMemo(() => {
@@ -122,11 +129,38 @@ export default function ProductCard({
       : 0;
   }, [organization_price, total_cost]);
 
+  const handleCheckboxChange = useCallback(
+    (productSelected: boolean) => {
+      setSelected(productSelected);
+      onProductClick(id, productSelected);
+    },
+    [onProductClick, id],
+  );
+
   return (
     <div
       className={`relative w-full bg-white shadow-t-lg p-2 rounded-2xl ${onClick ? 'cursor-pointer' : ''}`}
       onClick={onClick}
     >
+      <Checkbox
+        checked={selected}
+        onChange={handleCheckboxChange}
+        className="group block size-12 rounded-lg border bg-white data-[checked]:bg-blue-500 absolute right-2 top-1 z-50"
+      >
+        {/* Checkmark icon */}
+        <svg
+          className={`stroke-white opacity-0 ${selected ? 'opacity-100' : ''}`}
+          viewBox="0 0 14 14"
+          fill="none"
+        >
+          <path
+            d="M3 8L6 11L11 3.5"
+            strokeWidth={2}
+            strokeLinecap="round"
+            strokeLinejoin="round"
+          />
+        </svg>
+      </Checkbox>
       <div className="py-[2px] font-semibold">{voucher_type}</div>
       <div className="max-w-full h-auto relative rounded-2xl border">
         <LazyLoadImage
@@ -172,117 +206,40 @@ export default function ProductCard({
                   {priceType.label}
                 </p>
               </span>
-              {priceType.editable ? (
-                priceType.label == 'Discount to' ? (
-                  <select
-                    value={discountMode}
-                    onChange={handleDiscountModeChange}
-                    className="w-full border rounded px-2 py-1"
-                    style={{ background: 'transparent', border: 'none' }}
-                  >
-                    <option value="ORGANIZATION">Organization</option>
-                    <option value="EMPLOYEE">Employee</option>
-                  </select>
-                ) : (
-                  <div onClick={(e) => e.stopPropagation()}>
-                    <input
-                      type="number"
-                      max={100}
-                      min={0}
-                      value={organizationDiscountRate || ''}
-                      onChange={handleOrganizationDiscountRateChange}
-                      className="w-full border rounded px-2 py-1"
-                      placeholder="Enter discount rate"
-                      style={{ background: 'transparent', border: 'none' }}
-                    />
-                  </div>
-                )
-              ) : priceType.label === 'Organization Price' ? (
-                <div
-                  className="flex items-center"
-                  onClick={(event) => {
-                    event.stopPropagation();
+              {['Company Cost Per Employee', 'Value'].includes(
+                priceType.label,
+              ) ? (
+                <EditablePriceComponent
+                  label={priceType.label}
+                  value={priceType.value}
+                  notEditable={
+                    (priceType.label === 'Value' &&
+                      discountMode !== 'EMPLOYEE') ||
+                    status === 'ACTIVE'
+                  }
+                  onSave={(value: number | string) => {
+                    if (priceType.label === 'Company Cost Per Employee') {
+                      const numValue =
+                        typeof value === 'string' ? parseFloat(value) : value;
+                      if (organizationId && id && numValue) {
+                        updateEmployeeGroupCampaignProduct({
+                          productId: id,
+                          companyCostPerEmployee: numValue,
+                        });
+                        handleProductCompanyCostChange?.(id, numValue);
+                      }
+                    } else {
+                      const numValue =
+                        typeof value === 'string' ? parseFloat(value) : value;
+                      handleValueChange(id, numValue);
+                    }
                   }}
-                >
-                  {editOrganizationPrice ? (
-                    <div className="flex items-center">
-                      <input
-                        type="number"
-                        className="w-[50px]"
-                        value={organizationProductPrice}
-                        onChange={(event) => {
-                          setOrganizationProductPrice(+event.target.value);
-                        }}
-                      />
-                      <div
-                        className="cursor-pointer hover:bg-white hover:opacity-50 rounded-full px-1"
-                        onClick={() => {
-                          if (organizationProductPrice < 0) {
-                            alert('Organization price must be greater than 0');
-                            return;
-                          }
-                          if (
-                            organizationId &&
-                            id &&
-                            organizationProductPrice
-                          ) {
-                            updateOrganizationProduct(
-                              organizationId,
-                              id,
-                              organizationProductPrice,
-                            )
-                              .then((response) => {
-                                if (response?.price) {
-                                  setProducts((prevProducts) => {
-                                    return prevProducts.map((product) => {
-                                      if (product.id === id) {
-                                        return {
-                                          ...product,
-                                          calculated_price: response.price,
-                                        };
-                                      }
-                                      return product;
-                                    });
-                                  });
-                                }
-                              })
-                              .catch(console.error);
-                          }
-                          setEditOrganizationPrice(false);
-                        }}
-                      >
-                        <CheckIcon className="size-4" />
-                      </div>
-                      <div
-                        className="cursor-pointer hover:bg-white hover:opacity-50 rounded-full px-1"
-                        onClick={() => {
-                          setOrganizationProductPrice(organization_price);
-                          setEditOrganizationPrice(false);
-                        }}
-                      >
-                        <XMarkIcon className="size-4" />
-                      </div>
-                    </div>
-                  ) : (
-                    <div className="flex items-center">
-                      <label className="font-sans px-1 font-semibold text-base">
-                        ${priceType.value}
-                      </label>
-                      <div
-                        className="cursor-pointer hover:bg-white hover:opacity-50 rounded-full px-1"
-                        onClick={(event) => {
-                          event.stopPropagation();
-                          setEditOrganizationPrice(true);
-                        }}
-                      >
-                        <PencilIcon className="size-3" />
-                      </div>
-                    </div>
-                  )}
-                </div>
+                />
               ) : (
                 <label className="font-sans px-1 font-semibold text-base">
-                  ${priceType.value}
+                  {typeof priceType.value === 'string'
+                    ? formatWord(priceType.value)
+                    : priceType.value}
                 </label>
               )}
             </span>
@@ -320,3 +277,85 @@ export default function ProductCard({
     </div>
   );
 }
+
+const EditablePriceComponent = ({
+  value,
+  label,
+  onSave,
+  notEditable = false,
+}: EditablePriceComponentProps) => {
+  const { config } = useNPConfig();
+  const configData = JSON.parse(config?.data.replace(/&quot;/g, '"') || '{}');
+  const status = configData?.status;
+  const [isEdit, setIsEdit] = useState(false);
+  const [newValue, setNewValue] = useState(value);
+
+  useEffect(() => {
+    setNewValue(value);
+  }, [value]);
+
+  const isEditable = !notEditable && status !== 'ACTIVE';
+
+  return (
+    <div
+      className="flex items-center"
+      onClick={(event) => {
+        event.stopPropagation();
+      }}
+    >
+      {isEdit && isEditable ? (
+        <div className="flex items-center">
+          <input
+            type="number"
+            className="w-[50px]"
+            value={newValue}
+            onChange={(event) => {
+              setNewValue(+event.target.value);
+            }}
+          />
+          <div
+            className="cursor-pointer hover:bg-white hover:opacity-50 rounded-full px-1"
+            onClick={() => {
+              const numValue =
+                typeof newValue === 'string' ? parseFloat(newValue) : newValue;
+              if (numValue < 0) {
+                alert(`${label} must be greater than 0`);
+                return;
+              }
+              onSave(newValue);
+              setIsEdit(false);
+            }}
+          >
+            <CheckIcon className="size-4" />
+          </div>
+          <div
+            className="cursor-pointer hover:bg-white hover:opacity-50 rounded-full px-1"
+            onClick={() => {
+              setNewValue(value);
+              setIsEdit(false);
+            }}
+          >
+            <XMarkIcon className="size-4" />
+          </div>
+        </div>
+      ) : (
+        <div className="flex items-center">
+          <label className="font-sans px-1 font-semibold text-base">
+            ${newValue}
+          </label>
+          <div
+            className="cursor-pointer hover:bg-white hover:opacity-50 rounded-full px-1"
+            onClick={(event) => {
+              event.stopPropagation();
+              if (isEditable) {
+                setIsEdit(true);
+              }
+            }}
+          >
+            {isEditable && <PencilIcon className="size-3" />}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+};

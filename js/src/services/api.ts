@@ -11,7 +11,7 @@ export const getProducts = async (
   brandId?: number,
   supplierId?: number,
   categoryId?: number,
-  tagId?: number,
+  tagIds?: number[],
   campaignId?: number,
   employeeGroupId?: number,
   product_kind?: string,
@@ -33,7 +33,7 @@ export const getProducts = async (
     brand_id: brandId,
     supplier_id: supplierId,
     category_id: categoryId,
-    tag_id: tagId,
+    tag_ids: tagIds,
     campaign_id: campaignId,
     employee_group_id: employeeGroupId,
     product_kind,
@@ -63,6 +63,25 @@ export const updateOrganizationProduct = async (
   };
 
   return await _callAPI('campaign/organization-product', 'PUT', body);
+};
+
+export const updateEmployeeGroupCampaignProduct = async ({
+  productId,
+  companyCostPerEmployee,
+}: {
+  productId: number;
+  companyCostPerEmployee: number;
+}) => {
+  const body = {
+    product_id: productId,
+    company_cost_per_employee: companyCostPerEmployee,
+  };
+
+  return await _callAPI(
+    `campaign/employee-group-campaign-product`,
+    'PUT',
+    body,
+  );
 };
 
 type Method = 'GET' | 'POST' | 'PUT' | 'DELETE' | 'OPTIONS' | 'HEAD' | 'PATCH';

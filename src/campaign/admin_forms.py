@@ -1,7 +1,9 @@
 from dal import autocomplete
 from django import forms
+from django.contrib import admin
 from django.contrib.admin import site as admin_site
 from django.contrib.admin.widgets import (
+    AutocompleteSelect,
     RelatedFieldWidgetWrapper,
 )
 from django.forms.models import BaseInlineFormSet
@@ -17,11 +19,14 @@ from campaign.models import (
     Organization,
     QuickOffer,
 )
-from inventory.models import Product
+from logistics.models import PurchaseOrderProduct
 
 
 class CampaignForm(forms.ModelForm):
-    organization = forms.ModelChoiceField(queryset=Organization.objects.all())
+    organization = forms.ModelChoiceField(
+        queryset=Organization.objects.all(),
+        widget=autocomplete.ModelSelect2(url='organization-autocomplete'),
+    )
     campaign_type = forms.ChoiceField(
         choices=[
             (Campaign.CampaignTypeEnum.NORMAL.name, 'Normal'),
@@ -85,7 +90,10 @@ class CampaignForm(forms.ModelForm):
 
 
 class EmployeeGroupCampaignForm(forms.Form):
-    employee_group = forms.ModelChoiceField(queryset=EmployeeGroup.objects.all())
+    employee_group = forms.ModelChoiceField(
+        queryset=EmployeeGroup.objects.all(),
+        widget=autocomplete.ModelSelect2(url='employee-group-autocomplete'),
+    )
     default_discount = forms.ChoiceField(
         choices=[
             (choice.name, choice.value)
@@ -94,7 +102,10 @@ class EmployeeGroupCampaignForm(forms.Form):
         initial=EmployeeGroupCampaign.DefaultDiscountTypeEnum.ORGANIZATION.name,
         required=False,
     )
-    budget_per_employee = forms.IntegerField()
+    budget_per_employee = forms.IntegerField(label='Employee Credit')
+    company_cost_per_employee = forms.IntegerField(
+        label='Company Cost Per Employee', initial=0
+    )
     product_selection_mode = forms.ChoiceField(
         choices=[
             (choice.name, choice.value)
@@ -124,7 +135,9 @@ class EmployeeGroupCampaignForm(forms.Form):
 
 class EmployeeForm(forms.ModelForm):
     organization = forms.ModelChoiceField(
-        queryset=Organization.objects.all(), required=False
+        queryset=Organization.objects.all(),
+        required=False,
+        widget=autocomplete.ModelSelect2(url='organization-autocomplete'),
     )
 
     def __init__(self, *args, **kwargs):
@@ -145,6 +158,11 @@ class EmployeeForm(forms.ModelForm):
     class Meta:
         model = Employee
         fields = '__all__'
+        widgets = {
+            'employee_group': autocomplete.ModelSelect2(
+                url='employee-group-autocomplete'
+            )
+        }
 
 
 class ImportPricelistForm(forms.Form):
@@ -217,22 +235,22 @@ class CampaignCustomizationForm(forms.ModelForm):
             'sms_welcome_text': (
                 'Use `{{ variable }}` to add dynamic values to your text. '
                 'Available variables: `first_name`, `last_name`, '
-                '`organization_name`, `campaign_name`, `link`'
+                '`organization_name`, `campaign_name`, `link`, `auth_id`'
             ),
             'sms_welcome_text_he': (
                 'Use `{{ variable }}` to add dynamic values to your text. '
                 'Available variables: `first_name`, `last_name`, '
-                '`organization_name`, `campaign_name`, `link`'
+                '`organization_name`, `campaign_name`, `link`, `auth_id`'
             ),
             'email_welcome_text': (
                 'Use `{{ variable }}` to add dynamic values to your text. '
                 'Available variables: `first_name`, `last_name`, '
-                '`organization_name`, `campaign_name`'
+                '`organization_name`, `campaign_name`, `link`, `auth_id`'
             ),
             'email_welcome_text_he': (
                 'Use `{{ variable }}` to add dynamic values to your text. '
                 'Available variables: `first_name`, `last_name`, '
-                '`organization_name`, `campaign_name`'
+                '`organization_name`, `campaign_name`, `link`, `auth_id`'
             ),
         }
 
@@ -240,7 +258,23 @@ class CampaignCustomizationForm(forms.ModelForm):
 class OrderProductInlineForm(forms.ModelForm):
     class Meta:
         model = OrderProduct
-        fields = '__all__'
+        fields = ['product_id', 'quantity', 'purchase_order_product']
+        widgets = {
+            'purchase_order_product': AutocompleteSelect(
+                PurchaseOrderProduct._meta.get_field('order_products').remote_field,
+                admin_site=admin.site,
+                attrs={'style': 'width: 100%'},
+                choices=[],
+            ),
+            'product_id': AutocompleteSelect(
+                EmployeeGroupCampaignProduct._meta.get_field(
+                    'orderproduct'
+                ).remote_field,
+                admin_site=admin.site,
+                attrs={'style': 'width: 100%'},
+                choices=[],
+            ),
+        }
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
@@ -254,6 +288,50 @@ class OrderProductInlineForm(forms.ModelForm):
             self.fields['product_id'].queryset = self.fields[
                 'product_id'
             ].queryset.filter(active=True)
+
+    def save_new(self, form, commit=True):
+        """
+        Save a new OrderProduct instance, safely populating SKU and supplier.
+
+        This method:
+        - Calls the parent's save_new(form, commit=False) to instantiate without
+            immediately writing to the database.
+        - Safely navigates through `instance.product_id` and its nested
+            `product_id` relation, guarding against missing attributes.
+        - If the nested product exists, copies over its `sku` and, if present,
+            its supplier's `name`; otherwise leaves those fields blank.
+        - Optionally commits the instance to the database.
+
+        Args:
+            form (Form): The ModelForm being saved.
+            commit (bool, optional): If True, saves the instance after populating
+                                    SKU and supplier. Defaults to True.
+
+        Returns:
+            OrderProduct: The newly saved instance, with `.sku` and `.supplier`
+                        set when available.
+        """
+        # Instantiate without saving to the DB
+        instance = super().save_new(form, commit=False)
+
+        # Safely retrieve the related product objects
+        product_rel = getattr(instance, 'product_id', None)
+        nested_product = (
+            getattr(product_rel, 'product_id', None) if product_rel else None
+        )
+
+        if nested_product:
+            # Populate SKU
+            instance.sku = nested_product.sku
+            # Populate supplier name if available
+            supplier_rel = getattr(nested_product, 'supplier', None)
+            instance.supplier = (
+                getattr(supplier_rel, 'name', '') if supplier_rel else ''
+            )
+
+        if commit:
+            instance.save()
+        return instance
 
 
 class OrderProductInlineFormset(BaseInlineFormSet):
@@ -295,6 +373,9 @@ class EmployeeGroupForm(forms.ModelForm):
     class Meta:
         model = EmployeeGroup
         fields = '__all__'
+        widgets = {
+            'organization': autocomplete.ModelSelect2(url='organization-autocomplete')
+        }
 
 
 class OrderForm(forms.ModelForm):
@@ -304,6 +385,17 @@ class OrderForm(forms.ModelForm):
         widgets = {
             'campaign_employee_id': autocomplete.ModelSelect2(
                 url='campaign-employee-autocomplete'
+            )
+        }
+
+
+class OrderProductForm(forms.ModelForm):
+    class Meta:
+        model = OrderProduct
+        fields = '__all__'
+        widgets = {
+            'product_id': autocomplete.ModelSelect2(
+                url='employee-group-campaign-product-autocomplete'
             )
         }
 
@@ -322,6 +414,9 @@ class QuickOfferForm(forms.ModelForm):
             'tags',
             'nicklas_status',
         )
+        widgets = {
+            'organization': autocomplete.ModelSelect2(url='organization-autocomplete')
+        }
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
@@ -339,7 +434,7 @@ class QuickOfferForm(forms.ModelForm):
 
 class AddQuickOfferProductsForm(forms.Form):
     template_name = 'quick_offer/product_selection.html'
-    products = forms.ModelMultipleChoiceField(queryset=Product.objects.all())
+    products = forms.CharField()
 
 
 class QuickOfferCustomizationForm(forms.ModelForm):
@@ -379,21 +474,21 @@ class QuickOfferCustomizationForm(forms.ModelForm):
             'sms_welcome_text': (
                 'Use `{{ variable }}` to add dynamic values to your text. '
                 'Available variables: `first_name`, `last_name`, '
-                '`organization_name`, `campaign_name`, `link`'
+                '`organization_name`, `campaign_name`, `link`, `auth_id`'
             ),
             'sms_welcome_text_he': (
                 'Use `{{ variable }}` to add dynamic values to your text. '
                 'Available variables: `first_name`, `last_name`, '
-                '`organization_name`, `campaign_name`, `link`'
+                '`organization_name`, `campaign_name`, `link`, `auth_id`'
             ),
             'email_welcome_text': (
                 'Use `{{ variable }}` to add dynamic values to your text. '
                 'Available variables: `first_name`, `last_name`, '
-                '`organization_name`, `campaign_name`'
+                '`organization_name`, `campaign_name`, `link`, `auth_id`'
             ),
             'email_welcome_text_he': (
                 'Use `{{ variable }}` to add dynamic values to your text. '
                 'Available variables: `first_name`, `last_name`, '
-                '`organization_name`, `campaign_name`'
+                '`organization_name`, `campaign_name`, `link`, `auth_id`'
             ),
         }

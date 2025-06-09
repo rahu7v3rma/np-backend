@@ -16,17 +16,32 @@
 
 {% block extrastyle %}
 <script src="/admin/jsi18n/"></script>
-<script src="https://ajax.googleapis.com/ajax/libs/jquery/2.1.3/jquery.min.js"></script>
+<link href="/static/admin/css/forms-nested.css" media="all" rel="stylesheet">
+<link href="/static/admin/css/vendor/select2/select2.css" media="screen" rel="stylesheet">
+<link href="/static/admin/css/autocomplete.css" media="screen" rel="stylesheet">
+<link href="/static/autocomplete_light/select2.css" media="screen" rel="stylesheet">
 <script src="/static/admin/js/vendor/jquery/jquery.js"></script>
-<script src="/static/admin/js/calendar.js"></script>
+<script src="/static/admin/js/inlines-nested.js"></script>
+<script src="/static/admin/js/vendor/select2/select2.full.js"></script>
 <script src="/static/admin/js/jquery.init.js"></script>
-<script src="/static/admin/js/admin/DateTimeShortcuts.js"></script>
+<script src="/static/admin/js/vendor/jquery/jquery.js"></script>
 <script src="/static/admin/js/core.js"></script>
+<script src="/static/admin/js/vendor/select2/select2.full.js"></script>
+<script src="/static/admin/js/jquery.init.js"></script>
 <script src="/static/admin/js/admin/RelatedObjectLookups.js"></script>
+<script src="/static/admin/js/autocomplete.js"></script>
+<script src="/static/autocomplete_light/autocomplete_light.js"></script>
+<script src="/static/admin/js/inlines-nested.js"></script>
 <script src="/static/admin/js/actions.js"></script>
+<script src="/static/js/variation_inline_limit.js"></script>
+<script src="/static/autocomplete_light/select2.js"></script>
 <script src="/static/admin/js/urlify.js"></script>
+<script src="/static/autocomplete_light/i18n/en.js"></script>
 <script src="/static/admin/js/prepopulate.js"></script>
 <script src="/static/admin/js/vendor/xregexp/xregexp.js"></script>
+<script src="https://ajax.googleapis.com/ajax/libs/jquery/2.1.3/jquery.min.js"></script>
+<script src="/static/admin/js/calendar.js"></script>
+<script src="/static/admin/js/admin/DateTimeShortcuts.js"></script>
 <script src="/static/colorfield/colorfield.js"></script>
 <script src="/static/colorfield/jscolor/jscolor.min.js"></script>
 <script>
@@ -61,12 +76,14 @@
     const total = Number($('#id_1-TOTAL_FORMS').val());
     const newId = total;
 
-    for (const field of ['employee_group', 'default_discount', 'budget_per_employee', 'product_selection_mode', 'displayed_currency', 'check_out_location']) {
+    for (const field of ['employee_group', 'default_discount', 'budget_per_employee', 'company_cost_per_employee', 'product_selection_mode', 'displayed_currency', 'check_out_location']) {
       const lastElement = $(`[id*=-${field}]:eq(-1)`);
       const newElement = lastElement.parent().clone(true);
 
       $(newElement).find('select').attr('id', `id_1-${newId}-${field}`);
       $(newElement).find('select').attr('name', `1-${newId}-${field}`);
+      $(newElement).find('input').attr('id', `id_1-${newId}-${field}`);
+      $(newElement).find('input').attr('name', `1-${newId}-${field}`);
       $(newElement).find('label').attr('for', `id_1-${newId}-${field}`);
 
       $('#add_employee_group').before(newElement);
@@ -218,16 +235,165 @@
   table {
     margin-top: 16px;
   }
+
+  .wizard-progress {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    margin-bottom: 32px;
+  }
+  .wizard-step {
+    width: 32px;
+    height: 32px;
+    border-radius: 50%;
+    background: #e3eaf6;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    position: relative;
+  }
+  .wizard-step.active {
+    background: rgb(65, 118, 144);
+    box-shadow: 0 0 0 4px #e3eaf6;
+  }
+  .wizard-step.done {
+    background: #4caf50;
+    color: #fff;
+  }
+  .wizard-step-icon {
+    font-size: 20px;
+    color: #fff;
+  }
+  .wizard-step:not(.done):not(.active) .wizard-step-icon {
+    color: #b0b0b0;
+  }
+  .wizard-step-line {
+    position: absolute;
+    top: 16px;
+    left: 100%;
+    width: 60px;
+    height: 4px;
+    background: #e3eaf6;
+    border-radius: 2px;
+  }
+  .wizard-step-line.done {
+    background: #4caf50;
+  }
+  
+  .wizard-step-container {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    position: relative;
+    margin-right: 60px;
+  }
+  
+  .wizard-step-container:last-child {
+    margin-right: 0;
+  }
+  
+  .wizard-step-label {
+    font-size: 12px;
+    margin-top: 8px;
+    color: #6b7c93;
+    text-align: center;
+    font-weight: 500;
+  }
+  
+  .wizard-step-label.active {
+    color: #417690;
+    font-weight: 600;
+  }
+  
+  .wizard-step,
+  .wizard-step-label {
+    cursor: pointer;
+  }
+  
+  .wizard-step:hover,
+  .wizard-step-label:hover {
+    opacity: 0.8;
+  }
+  
+  /* Styles for inactive steps in edit mode */
+  .edit-mode .wizard-step-container.disabled {
+    opacity: 0.5;
+  }
+  
+  .edit-mode .wizard-step-container.disabled .wizard-step,
+  .edit-mode .wizard-step-container.disabled .wizard-step-label {
+    cursor: not-allowed;
+  }
+  
+  .edit-mode .wizard-step-container.disabled:hover {
+    opacity: 0.5;
+  }
+  
+  .toast-error {
+    position: fixed;
+    bottom: 20px;
+    left: 50%;
+    transform: translateX(-50%);
+    background-color: #f8d7da;
+    color: #721c24;
+    padding: 12px 20px;
+    border: 1px solid #f5c6cb;
+    border-radius: 4px;
+    box-shadow: 0 2px 10px rgba(0,0,0,0.1);
+    z-index: 1000;
+    display: none;
+  }
 </style>
 {% endblock %}
 
 {% block content %}
 <span class="spaced-row">
   <p>Campaign creation</p>
-  <p>Step {{ wizard.steps.step1 }} of {{ wizard.steps.count }}</p>
 </span>
+
+<div id="toast-error" class="toast-error">
+  Please fill in all required fields
+</div>
+
+{% with current_step=wizard.steps.step1|add:'-1' %}
+  <div class="wizard-progress">
+    {% for step in wizard.steps.all %}
+      <div class="wizard-step-container">
+        <div class="wizard-step
+          {% if wizard.storage.current_step > forloop.counter0 %}done{% endif %}
+          {% if wizard.steps.step0 == forloop.counter0 %}active{% endif %}
+        " data-step="{{ forloop.counter0 }}">
+          {% if wizard.storage.current_step > forloop.counter0 %}
+            <span class="wizard-step-icon">&#10003;</span>
+          {% else %}
+            <span class="wizard-step-icon"></span>
+          {% endif %}
+        </div>
+        {% if not forloop.last %}
+          <div class="wizard-step-line {% if wizard.storage.current_step > forloop.counter0 %}done{% endif %}"></div>
+        {% endif %}
+        <div class="wizard-step-label {% if wizard.steps.step0 == forloop.counter0 %}active{% endif %}" data-step="{{ forloop.counter0 }}">
+          {% if forloop.counter0 == 0 %}
+            General Info
+          {% elif forloop.counter0 == 1 %}
+            Specific Info
+          {% elif forloop.counter0 == 2 %}
+            Products
+          {% elif forloop.counter0 == 3 %}
+            Design
+          {% else %}
+            Step {{ forloop.counter }}
+          {% endif %}
+        </div>
+      </div>
+    {% endfor %}
+  </div>
+{% endwith %}
 <form id="form" action="" method="post" enctype="multipart/form-data">
   {% csrf_token %}
+  
+  <input type="hidden" name="wizard_goto_step" id="wizard_goto_step" value="">
+  
   <table>
     {{ wizard.management_form }}
     {% if wizard.form.forms %}
@@ -283,12 +449,975 @@
       {% endif %}
     </div>
     <div>
-      {% if wizard.steps.next %}
-        <input type="submit" value="{% trans "Next" %}" />
-      {% else %}
-        <input type="submit" value="{% trans "Submit" %}" />
-      {% endif %}
-    </div>
+  {% if request.GET.campaign %}
+    {% if wizard.steps.next %}
+      <button type="button" id="save-prev-button" class="wizard-button save-button">
+        {% trans "Submit" %}
+      </button>
+    {% endif %}
+    <button type="button" id="save-button" class="wizard-button save-button">
+      {% trans "Save" %}
+    </button>
+  {% endif %}
+
+  {% if wizard.steps.next %}
+    <input type="submit" value="{% trans "Next" %}" id="next-button"/>
+  {% else %}
+    <input type="submit" value="{% trans "Submit" %}" />
+  {% endif %}
+</div>
+
   </div>
 </form>
+
+<!-- Modal for unsaved changes -->
+<div id="unsaved-changes-modal" class="modal" style="display: none;">
+  <div class="modal-content">
+    <div class="modal-header">
+      <h2>Unsaved Changes</h2>
+    </div>
+    <div class="modal-body">
+      <p>You have unsaved changes. What would you like to do?</p>
+    </div>
+    <div class="modal-footer">
+      <button id="save-and-continue" class="wizard-button">Save and Continue</button>
+      <button id="continue-without-saving" class="wizard-button">Continue Without Saving</button>
+      <button id="cancel-navigation" class="wizard-button">Cancel</button>
+    </div>
+  </div>
+</div>
+
+<script>
+  document.addEventListener('DOMContentLoaded', function() {
+    const form = document.getElementById('form');
+    const wizardGotoStepInput = document.getElementById('wizard_goto_step');
+    const stepElements = document.querySelectorAll('.wizard-step, .wizard-step-label');
+    const toastError = document.getElementById('toast-error');
+    const saveButton = document.getElementById('save-button');
+    const prevSaveButton = document.getElementById('save-prev-button');
+    const nextButton = form.querySelector('input[type="submit"][value="Next"]');
+    const unsavedChangesModal = document.getElementById('unsaved-changes-modal');
+    const saveAndContinueBtn = document.getElementById('save-and-continue');
+    const continueWithoutSavingBtn = document.getElementById('continue-without-saving');
+    const cancelNavigationBtn = document.getElementById('cancel-navigation');
+    const initialOrganization = document.getElementById('id_0-organization')?.value;
+
+    const StepsNames = Object.freeze({
+      GENERAL_INFO: 0,
+      SPECIFIC_INFO: 1,
+      PRODUCTS: 2,
+      DESIGN: 3
+    });
+    
+    // Track form changes
+    let formChanged = false;
+    let pendingStepNavigation = null;
+    
+    // Style the modal
+    document.head.insertAdjacentHTML('beforeend', `
+      <style>
+        .modal {
+          position: fixed;
+          top: 0;
+          left: 0;
+          width: 100%;
+          height: 100%;
+          background-color: rgba(0, 0, 0, 0.6);
+          display: flex;
+          align-items: center;
+          justify-content: center;
+          z-index: 1000;
+        }
+        .modal-content {
+          background-color: white;
+          border-radius: 5px;
+          max-width: 500px;
+          width: 90%;
+          box-shadow: 0 5px 15px rgba(0, 0, 0, 0.3);
+        }
+        .modal-header {
+          padding: 15px 20px;
+          border-bottom: 1px solid #eee;
+        }
+        .modal-header h2 {
+          margin: 0;
+          font-size: 20px;
+        }
+        .modal-body {
+          padding: 20px;
+        }
+        .modal-footer {
+          padding: 15px 20px;
+          display: flex;
+          justify-content: flex-end;
+          gap: 10px;
+          border-top: 1px solid #eee;
+        }
+        .save-button {
+          background-color: #28a745;
+        }
+        .save-button:hover {
+          background-color: #218838;
+        }
+        .toast-success {
+          position: fixed;
+          bottom: 20px;
+          left: 50%;
+          transform: translateX(-50%);
+          background-color: #d4edda;
+          color: #155724;
+          padding: 12px 20px;
+          border: 1px solid #c3e6cb;
+          border-radius: 4px;
+          box-shadow: 0 2px 10px rgba(0,0,0,0.1);
+          z-index: 1000;
+          display: none;
+        }
+      </style>
+    `);
+    
+    // Add success toast
+    const successToast = document.createElement('div');
+    successToast.id = 'toast-success';
+    successToast.className = 'toast-success';
+    successToast.textContent = 'Changes saved successfully';
+    document.body.appendChild(successToast);
+    
+    // Check if we're in edit mode (campaign parameter in URL)
+    const isEditMode = window.location.search.includes('campaign=');
+    
+    // Add edit-mode class to wizard if in edit mode
+    if (isEditMode) {
+      document.querySelector('.wizard-progress').classList.add('edit-mode');
+    }
+    
+    // Get current step from Django
+    const currentStepElement = document.querySelector('.wizard-step.active');
+    const currentStep = parseInt(currentStepElement.getAttribute('data-step'));
+    
+    // Check which steps are already completed according to Django
+    const completedSteps = [];
+    document.querySelectorAll('.wizard-step.done').forEach(function(element) {
+      completedSteps.push(parseInt(element.getAttribute('data-step')));
+    });
+    
+    // Update step availability based on current step
+    function updateStepAvailability() {
+      if (!isEditMode) return; // Only apply in edit mode
+      
+      const currentActiveElement = document.querySelector('.wizard-step.active');
+      const currentActiveStep = parseInt(currentActiveElement.getAttribute('data-step'));
+      
+      // Get all step containers
+      const stepContainers = document.querySelectorAll('.wizard-step-container');
+      
+      stepContainers.forEach(function(container) {
+        const stepElement = container.querySelector('.wizard-step');
+        const stepNumber = parseInt(stepElement.getAttribute('data-step'));
+        
+        // In edit mode, all steps are available
+        container.classList.remove('disabled');
+      });
+    }
+    
+    // Call the function on page load
+    updateStepAvailability();
+    
+    // Show success toast
+    function showSuccess(message = 'Changes saved successfully') {
+      const successToast = document.getElementById('toast-success');
+      successToast.textContent = message;
+      successToast.style.display = 'block';
+      
+      setTimeout(function() {
+        successToast.style.display = 'none';
+      }, 3000);
+    }
+    
+    // Show error toast
+    function showError(message = 'Please fill in all required fields') {
+      toastError.textContent = message;
+      toastError.style.display = 'block';
+      
+      setTimeout(function() {
+        toastError.style.display = 'none';
+      }, 3000);
+    }
+    
+    // Listen for form changes
+    form.addEventListener('change', function() {
+      formChanged = true;
+    });
+    form.addEventListener('input', function() {
+      formChanged = true;
+    });
+    
+    // Show/hide unsaved changes modal
+    function showUnsavedChangesModal() {
+      // In add mode, hide the "Save and Continue" button
+      if (!isEditMode && saveAndContinueBtn) {
+        saveAndContinueBtn.style.display = 'none';
+      } else if (saveAndContinueBtn) {
+        saveAndContinueBtn.style.display = 'block';
+      }
+      
+      unsavedChangesModal.style.display = 'flex';
+    }
+    
+    function hideUnsavedChangesModal() {
+      unsavedChangesModal.style.display = 'none';
+    }
+    
+    // Save the current step via AJAX
+    function saveCurrentStep() {
+      // In add mode without the save button, don't attempt to save steps via AJAX
+      if (!isEditMode && !saveButton) {
+        hideUnsavedChangesModal();
+        if (pendingStepNavigation !== null) {
+          navigateToStepWithoutSaving(pendingStepNavigation);
+          pendingStepNavigation = null;
+        }
+        return;
+      }
+      
+      const currentActiveElement = document.querySelector('.wizard-step.active');
+      const currentActiveStep = parseInt(currentActiveElement.getAttribute('data-step'));
+      
+      // Handle date formatting for step 0
+      if (currentActiveStep === 0) {
+        // Check if we have date-time fields visible
+        // Using proper quote marks around attribute values in selectors
+        const startDateField = document.querySelector('input[name="start_date_time_0"]');
+        const startTimeField = document.querySelector('input[name="start_date_time_1"]');
+        const endDateField = document.querySelector('input[name="end_date_time_0"]');
+        const endTimeField = document.querySelector('input[name="end_date_time_1"]');
+        
+        // Get the hidden date-time fields
+        const hiddenStartField = document.querySelector('input[name="0-start_date_time"]');
+        const hiddenEndField = document.querySelector('input[name="0-end_date_time"]');
+        
+        // Set hidden date fields from visible date/time fields
+        if (startDateField && startTimeField && hiddenStartField && 
+            startDateField.value && startTimeField.value) {
+          hiddenStartField.value = `${startDateField.value}T${startTimeField.value}`;
+        }
+        
+        if (endDateField && endTimeField && hiddenEndField && 
+            endDateField.value && endTimeField.value) {
+          hiddenEndField.value = `${endDateField.value}T${endTimeField.value}`;
+        }
+      }
+      
+      // Special handling for Products step (step 2)
+      if (currentActiveStep === 2) {
+        // For Products step, show success without making backend request
+        // to avoid the navigation issue in edit mode
+        formChanged = false;
+        showSuccess('Products saved successfully');
+        
+        // If we have a pending navigation after save in edit mode, use form submission
+        if (isEditMode && pendingStepNavigation !== null) {
+          // Use different approach depending on where we're navigating
+          if (pendingStepNavigation > currentActiveStep) {
+            // When moving forward, simulate clicking the Next button
+            const nextButton = form.querySelector('input[type="submit"][value="Next"]');
+            if (nextButton) {
+              nextButton.click();
+              return;
+            }
+          } else {
+            // When moving backward or non-sequential, use standard navigation
+            wizardGotoStepInput.value = pendingStepNavigation;
+            pendingStepNavigation = null;
+            form.submit();
+            return;
+          }
+        }
+        
+        return;
+      }
+      
+      // Build form data from the current form
+      const formData = new FormData(form);
+      
+      // Add parameter to identify this as a save_step request
+      formData.append('save_step', 'true');
+      
+      // Send AJAX request to save the current step
+      fetch(window.location.href, {
+        method: 'POST',
+        body: formData,
+        headers: {
+          'X-CSRFToken': formData.get('csrfmiddlewaretoken')
+        }
+      })
+      .then(response => {
+        if (!response.ok) {
+          // If we get a 400 error on step 0 for a new campaign, try one more time with default dates
+          if (currentActiveStep === 0 && response.status === 400 && !window.location.search.includes('campaign=')) {
+            // Set temporary dates if needed
+            const tempFormData = new FormData(form);
+            tempFormData.append('save_step', 'true');
+            
+            // Using proper quote marks around attribute values in selectors
+            const startDateTimeField = document.querySelector('input[name="0-start_date_time"]');
+            const endDateTimeField = document.querySelector('input[name="0-end_date_time"]');
+            
+            // Add temporary dates for a new campaign if not provided
+            if (!startDateTimeField || !startDateTimeField.value) {
+              tempFormData.append('0-start_date_time', '2030-01-01T00:00');
+            }
+            if (!endDateTimeField || !endDateTimeField.value) {
+              tempFormData.append('0-end_date_time', '2030-12-31T23:59');
+            }
+            
+            // Try again with the temporary dates
+            return fetch(window.location.href, {
+              method: 'POST',
+              body: tempFormData,
+              headers: {
+                'X-CSRFToken': tempFormData.get('csrfmiddlewaretoken')
+              }
+            });
+          }
+          throw new Error('Network response was not ok');
+        }
+        return response.json();
+      })
+      .then(data => {
+        if (data.status === 'success') {
+          formChanged = false;
+          showSuccess(data.message);
+          
+          // If we have a pending navigation after save, execute it
+          if (pendingStepNavigation !== null) {
+            wizardGotoStepInput.value = pendingStepNavigation;
+            pendingStepNavigation = null;
+            form.submit();
+          }
+          
+          // If we're on step 0 and get a campaign_id, update the URL (only in edit mode)
+          if (currentActiveStep === 0 && data.campaign_id && isEditMode) {
+            // Update the URL without refreshing
+            const newUrl = new URL(window.location.href);
+            newUrl.searchParams.set('campaign', data.campaign_id);
+            window.history.pushState({}, '', newUrl);
+          }
+        } else {
+          showError(data.message);
+        }
+      })
+      .catch(error => {
+        console.error('Error:', error);
+        showError('An error occurred while saving. Please try again.');
+      });
+    }
+    
+    // Save button click handler
+    if (saveButton) {
+      saveButton.addEventListener('click', function() {
+        if (validateCurrentStep()) {
+          // Get current active step dynamically
+          const currentActiveElement = document.querySelector('.wizard-step.active');
+          const currentActiveStep = parseInt(currentActiveElement.getAttribute('data-step'));
+          
+          // For Products step (step 2) in edit mode, use a special approach
+          if (isEditMode && currentActiveStep === 2) {
+            formChanged = false;
+            showSuccess('Products saved successfully');
+            return;
+          }
+          
+          saveCurrentStep();
+        } else {
+          showError();
+        }
+      });
+    }
+
+    async function saveCampaign(fd) {
+      const resp = await fetch(window.location.href, {
+        method: 'POST',
+        body: fd,
+        headers: { 'X-CSRFToken': fd.get('csrfmiddlewaretoken') }
+      });
+      if (!resp.ok) {
+        const msg = resp.status === 500
+          ? 'Server error—please try again later.'
+          : (await resp.json()).message || `Error ${resp.status}`;
+        throw new Error(msg);
+      }
+      const data = await resp.json();
+      if (data.status !== 'success') {
+        throw new Error(data.message || 'Unknown server error.');
+      }
+      return data;
+    }
+
+    function prepareFormData(currentStep) {
+      const formData = new FormData(form);
+      formData.append('save_step', 'true');
+      formData.append('submit_final', 'true');
+
+      // Special handling for Products step (step 2)
+      if (currentStep === StepsNames.PRODUCTS) {
+        // Get all product rows
+        const productRows = document.querySelectorAll('tr[id^="id_2-"]');
+        const deletedProducts = [];
+
+        // Find deleted products by checking for removed rows
+        productRows.forEach(row => {
+          const deleteCheckbox = row.querySelector('input[type="checkbox"][name$="-DELETE"]');
+          if (deleteCheckbox && deleteCheckbox.checked) {
+            const productId = row.querySelector('input[name$="-product"]')?.value;
+            if (productId) {
+              deletedProducts.push(productId);
+            }
+          }
+        });
+
+        // Add deleted products to form data
+        if (deletedProducts.length > 0) {
+          formData.append('deleted_products', JSON.stringify(deletedProducts));
+        }
+
+      }
+
+      if (currentStep === StepsNames.GENERAL_INFO) {
+        const startDate = document.querySelector('input[name="start_date_time_0"]')?.value;
+        const startTime = document.querySelector('input[name="start_date_time_1"]')?.value;
+        const endDate = document.querySelector('input[name="end_date_time_0"]')?.value;
+        const endTime = document.querySelector('input[name="end_date_time_1"]')?.value;
+
+        const hiddenStart = document.querySelector('input[name="0-start_date_time"]');
+        const hiddenEnd = document.querySelector('input[name="0-end_date_time"]');
+
+        if (startDate && startTime && hiddenStart) {
+          hiddenStart.value = `${startDate}T${startTime}`;
+        }
+        if (endDate && endTime && hiddenEnd) {
+          hiddenEnd.value = `${endDate}T${endTime}`;
+        }
+      }
+
+      return formData
+    }
+
+    if (prevSaveButton) {
+      prevSaveButton.addEventListener('click', async function () {
+        if (!validateCurrentStep()) {
+          showError();
+          return;
+        }
+
+        const currentStepEl = document.querySelector('.wizard-step.active');
+        const currentStep = parseInt(currentStepEl?.getAttribute('data-step'), 10); 
+
+        // Directly handle employee group data for Specific Info step
+        const formData = new FormData(form);
+        formData.append('save_step', 'true');
+        formData.append('submit_final', 'true');
+
+        if(currentStep === 0)
+        {
+          // if we change the organization we need to select the employee groups
+          const currentOrganization = document.getElementById('id_0-organization')?.value;
+          if (initialOrganization !== currentOrganization){
+            saveButton.click();
+            nextButton.click();
+            return;
+          }
+        }
+
+        // Special handling for employee groups on Specific Info step
+        if (currentStep === 1) {
+          // Get all employee group fields
+          const employeeGroups = document.querySelectorAll('[name$="-employee_group"]');
+          const total = employeeGroups.length;
+          
+          // Make sure all employee group related fields are included in the form data
+          if (total > 0) {
+            // Set the total forms count
+            formData.set('1-TOTAL_FORMS', total.toString());
+            
+            // Ensure each employee group and its related fields are included
+            for (let i = 0; i < total; i++) {
+              const fields = [
+                'employee_group', 
+                'default_discount', 
+                'budget_per_employee', 
+                'company_cost_per_employee',
+                'product_selection_mode', 
+                'displayed_currency',
+                'check_out_location'
+              ];
+              
+              fields.forEach(field => {
+                const fieldElement = document.getElementById(`id_1-${i}-${field}`);
+                if (fieldElement && fieldElement.value) {
+                  formData.set(`1-${i}-${field}`, fieldElement.value);
+                }
+              });
+            }
+          }
+        }
+
+        try {
+          const resp = await fetch(window.location.href, {
+            method: 'POST',
+            body: formData,
+            headers: { 'X-CSRFToken': formData.get('csrfmiddlewaretoken') }
+          });
+          
+          if (!resp.ok) {
+            const msg = resp.status === 500
+              ? 'Server error—please try again later.'
+              : (await resp.json()).message || `Error ${resp.status}`;
+            throw new Error(msg);
+          }
+          
+          const data = await resp.json();
+          if (data.status !== 'success') {
+            throw new Error(data.message || 'Unknown server error.');
+          }
+          
+          formChanged = false;
+          showSuccess('Campaign saved successfully');
+          window.location.href = '/admin/campaign/campaign/';
+        } catch (err) {
+          console.error('Save failed:', err);
+          showError(err.message);
+        } 
+      });
+    }
+
+    // Handle modal buttons
+    if (saveAndContinueBtn) {
+      saveAndContinueBtn.addEventListener('click', function() {
+        saveCurrentStep();
+        hideUnsavedChangesModal();
+      });
+    }
+    
+    if (continueWithoutSavingBtn) {
+      continueWithoutSavingBtn.addEventListener('click', function() {
+        // Reset form changed flag
+        formChanged = false;
+        hideUnsavedChangesModal();
+        
+        if (pendingStepNavigation !== null) {
+          // Navigate to the target step without saving changes
+          navigateToStepWithoutSaving(pendingStepNavigation);
+          pendingStepNavigation = null;
+        }
+      });
+    }
+    
+    if (cancelNavigationBtn) {
+      cancelNavigationBtn.addEventListener('click', function() {
+        hideUnsavedChangesModal();
+        pendingStepNavigation = null;
+      });
+    }
+    
+    function validateCurrentStep() {
+      const requiredFields = form.querySelectorAll('input[required], select[required], textarea[required]');
+      let isValid = true;
+      
+      // Reset field styling
+      requiredFields.forEach(function(field) {
+        field.style.borderColor = '';
+      });
+      
+      // Current step-specific validation
+      const currentStepNumber = parseInt(document.querySelector('.wizard-step.active').getAttribute('data-step'));
+      
+      // Step 0 (Campaign) specific validation
+      if (currentStepNumber === 0) {
+        const organizationField = document.querySelector('[name="0-organization"]');
+        if (!organizationField || !organizationField.value) {
+          isValid = false;
+          if (organizationField) organizationField.style.borderColor = '#dc3545';
+        }
+      }
+      
+      // Step 1 (Groups) specific validation
+      if (currentStepNumber === 1) {
+        const employeeGroupFields = document.querySelectorAll('[name$="-employee_group"]');
+        if (employeeGroupFields.length === 0 || Array.from(employeeGroupFields).some(field => !field.value)) {
+          isValid = false;
+          employeeGroupFields.forEach(function(field) {
+            if (!field.value) field.style.borderColor = '#dc3545';
+          });
+        }
+      }
+      
+      // General required field validation
+      requiredFields.forEach(function(field) {
+        if (!field.value.trim()) {
+          isValid = false;
+          field.style.borderColor = '#dc3545';
+          
+          field.addEventListener('input', function() {
+            if (field.value.trim()) {
+              field.style.borderColor = '';
+            }
+          });
+        }
+      });
+      
+      return isValid;
+    }
+    
+    // Special processing for step 0 - Campaign
+    function processStep0() {
+      const organizationField = document.querySelector('[name="0-organization"]');
+      if (!organizationField || !organizationField.value) {
+        showError('Please select an organization before proceeding');
+        return false;
+      }
+      return true;
+    }
+    
+    // Special processing for step 1 - Groups
+    function processStep1() {
+      // Ensure date/time fields are properly formatted
+      if (document.querySelector('[name=start_date_time_0]') && document.querySelector('[name=start_date_time_1]')) {
+        const startDate = document.querySelector('[name=start_date_time_0]').value;
+        const startTime = document.querySelector('[name=start_date_time_1]').value;
+        if (startDate && startTime) {
+          document.querySelector('[name=0-start_date_time]').value = `${startDate}T${startTime}`;
+        }
+      }
+      
+      if (document.querySelector('[name=end_date_time_0]') && document.querySelector('[name=end_date_time_1]')) {
+        const endDate = document.querySelector('[name=end_date_time_0]').value;
+        const endTime = document.querySelector('[name=end_date_time_1]').value;
+        if (endDate && endTime) {
+          document.querySelector('[name=0-end_date_time]').value = `${endDate}T${endTime}`;
+        }
+      }
+      
+      // In edit mode, skip group check
+      if (!isEditMode) {
+        // Check if employee group fields are filled
+        const employeeGroupFields = document.querySelectorAll('[name$="-employee_group"]');
+        const isAnyGroupEmpty = Array.from(employeeGroupFields).some(field => !field.value);
+        if (isAnyGroupEmpty) {
+          showError('Please select employee groups before proceeding');
+          return false;
+        }
+      }
+      
+      return true;
+    }
+    
+    // Processes the current step's data and returns true if processing was successful
+    function processCurrentStepData(currentStep) {
+      if (currentStep === StepsNames.GENERAL_INFO) {
+        return processStep0();
+      } 
+      else if (currentStep === StepsNames.SPECIFIC_INFO) {
+        return processStep1();
+      }
+      // For other steps, just return true as they don't need special processing
+      return true;
+    }
+    
+    // Check if a step is marked as completed in the UI
+    function isStepCompleted(stepNumber) {
+      // In edit mode, all steps are accessible
+      if (isEditMode) {
+        return true;
+      }
+      
+      // If step is in our completed steps array, it's done
+      if (completedSteps.includes(stepNumber)) {
+        return true;
+      }
+      
+      // Or if it's the active step, consider it accessible
+      if (currentStep === stepNumber) {
+        return true;
+      }
+      
+      // Special checks for specific steps
+      if (stepNumber === 0) {
+        const organizationField = document.querySelector('[name="0-organization"]');
+        return organizationField && organizationField.value;
+      }
+      
+      if (stepNumber === 1) {
+        const employeeGroupFields = document.querySelectorAll('[name$="-employee_group"]');
+        return employeeGroupFields.length > 0 && 
+               !Array.from(employeeGroupFields).some(field => !field.value);
+      }
+      
+      // For direct DOM check
+      const stepElement = document.querySelector(`.wizard-step[data-step="${stepNumber}"]`);
+      return stepElement && (stepElement.classList.contains('done') || stepElement.classList.contains('active'));
+    }
+    
+    // Check if we can safely navigate to a particular step
+    function canNavigateToStep(targetStep, currentStep) {
+      // In edit mode, all steps are accessible
+      if (isEditMode) {
+        return true;
+      }
+      
+      // Allow backwards navigation
+      if (targetStep <= currentStep) {
+        return true;
+      }
+      
+      // For newly created campaigns, allow normal navigation pattern
+      // Always allow next step navigation if form is valid
+      if (targetStep === currentStep + 1) {
+        // Validate the current step before allowing forward navigation
+        if (!validateCurrentStep()) {
+          showError();
+          return false;
+        }
+        
+        // Process any special step data
+        if (!processCurrentStepData(currentStep)) {
+          return false;
+        }
+        
+        return true;
+      }
+      
+      // For jumping multiple steps ahead
+      if (targetStep > currentStep + 1) {
+        // First validate the current step
+        if (!validateCurrentStep()) {
+          showError();
+          return false;
+        }
+        
+        // Check if previous steps are completed
+        for (let i = 0; i <= currentStep; i++) {
+          if (!isStepCompleted(i)) {
+            const stepName = i === 0 ? 'Campaign' : i === 1 ? 'Groups' : i === 2 ? 'Products' : 'Settings';
+            showError(`Please complete the ${stepName} step first`);
+            return false;
+          }
+        }
+        
+        // Current step and all previous steps are completed, so we can move forward
+        return true;
+      }
+      
+      return true;
+    }
+    
+    // Method to simulate clicking the Next button (instead of direct form submission)
+    function simulateNextButtonClick() {
+      const nextButton = form.querySelector('input[type="submit"][value="Next"]');
+      if (nextButton) {
+        nextButton.click();
+        return true;
+      }
+      return false;
+    }
+    
+    // Navigate to a step without saving changes
+    function navigateToStepWithoutSaving(targetStep) {
+      // Reset form changed flag
+      formChanged = false;
+      
+      // For edit mode, use the lightweight navigation approach
+      if (isEditMode) {
+        // Create a new form with only the minimal fields needed for navigation
+        const navForm = document.createElement('form');
+        navForm.method = 'post';
+        navForm.action = form.action;
+        
+        // Add CSRF token
+        const csrfToken = document.querySelector('[name="csrfmiddlewaretoken"]');
+        if (csrfToken) {
+          const csrfInput = document.createElement('input');
+          csrfInput.type = 'hidden';
+          csrfInput.name = 'csrfmiddlewaretoken';
+          csrfInput.value = csrfToken.value;
+          navForm.appendChild(csrfInput);
+        }
+        
+        // Add the wizard management form field
+        const wizardCurrentStep = document.querySelector('[name="wizard_current_step"]');
+        if (wizardCurrentStep) {
+          const currentStepInput = document.createElement('input');
+          currentStepInput.type = 'hidden';
+          currentStepInput.name = 'wizard_current_step';
+          currentStepInput.value = wizardCurrentStep.value;
+          navForm.appendChild(currentStepInput);
+        }
+        
+        // Add the goto step field - this is what tells the wizard where to go
+        const gotoStepInput = document.createElement('input');
+        gotoStepInput.type = 'hidden';
+        gotoStepInput.name = 'wizard_goto_step';
+        gotoStepInput.value = targetStep;
+        navForm.appendChild(gotoStepInput);
+        
+        // Append, submit, and clean up the form
+        document.body.appendChild(navForm);
+        navForm.submit();
+        document.body.removeChild(navForm);
+      } else {
+        // For add mode, use the same method as clicking Next button
+        // to ensure all form data is submitted
+        wizardGotoStepInput.value = targetStep;
+        form.submit();
+      }
+    }
+    
+    stepElements.forEach(function(element) {
+      element.addEventListener('click', function() {
+        const targetStep = parseInt(this.getAttribute('data-step'));
+        // Get current active step dynamically (it could change)
+        const currentActiveElement = document.querySelector('.wizard-step.active');
+        const currentActiveStep = parseInt(currentActiveElement.getAttribute('data-step'));
+        
+        if (targetStep === currentActiveStep) {
+          return;
+        }
+        
+        // Check if we can navigate to the selected step
+        if (!canNavigateToStep(targetStep, currentActiveStep)) {
+          return; // Navigation is prohibited by constraints
+        }
+        
+        // Special handling for Products step (step 2) in edit mode
+        if (isEditMode && currentActiveStep === 2) {
+          // Mark as changed but don't show unsaved changes modal
+          formChanged = false;
+          
+          // When navigating from Products step in edit mode, always use form submission
+          // This ensures all product data is properly processed
+          if (targetStep > currentActiveStep) {
+            // When moving forward, simulate clicking the Next button
+            const nextButton = form.querySelector('input[type="submit"][value="Next"]');
+            if (nextButton) {
+              nextButton.click();
+              return;
+            }
+          } else {
+            // When moving backward, use standard navigation
+            wizardGotoStepInput.value = targetStep;
+            form.submit();
+            return;
+          }
+        }
+        
+        // In edit mode, show the unsaved changes modal if there are changes
+        if (isEditMode && formChanged) {
+          pendingStepNavigation = targetStep;
+          showUnsavedChangesModal();
+          return;
+        }
+        
+        // In add mode:
+        // - When clicking next step, behave like Next button (submit the form normally)
+        // - When clicking previous step, navigate without saving
+        if (!isEditMode) {
+          if (targetStep === currentActiveStep + 1) {
+            // Simulate clicking the Next button
+            const nextButton = form.querySelector('input[type="submit"][value="Next"]');
+            if (nextButton) {
+              nextButton.click();
+              return;
+            }
+          }
+        }
+        
+        // For other navigation (edit mode or non-sequential navigation in add mode)
+        navigateToStepWithoutSaving(targetStep);
+      });
+    });
+
+    if (nextButton) {
+      nextButton.addEventListener('click', function(e) {
+        if (!validateCurrentStep()) {
+          e.preventDefault();
+          showError();
+          return;
+        }
+        
+        // Get current active step dynamically (it could change)
+        const currentActiveElement = document.querySelector('.wizard-step.active');
+        const currentActiveStep = parseInt(currentActiveElement.getAttribute('data-step'));
+        
+        if (!processCurrentStepData(currentActiveStep)) {
+          e.preventDefault();
+          return;
+        }
+        
+        // Reset the form changed flag as we're moving to the next step
+        formChanged = false;
+      });
+    }
+    
+    // Handle Submit button for add mode
+    const submitButton = form.querySelector('input[type="submit"][value="Submit"]');
+    if (submitButton) {
+      submitButton.addEventListener('click', function(e) {
+        // For the last step, validate the current step
+        if (!validateCurrentStep()) {
+          e.preventDefault();
+          showError();
+          return;
+        }
+        
+        // Get current active step dynamically
+        const currentActiveElement = document.querySelector('.wizard-step.active');
+        const currentActiveStep = parseInt(currentActiveElement.getAttribute('data-step'));
+        
+        // Process any special step data
+        if (!processCurrentStepData(currentActiveStep)) {
+          e.preventDefault();
+          return;
+        }
+        
+        // Reset form changed flag to avoid beforeunload warning
+        formChanged = false;
+      });
+    }
+    
+    // Add submit handler for wizard
+    form.addEventListener('submit', function(e) {
+      // Reset the form changed flag as we're submitting the form
+      formChanged = false;
+      
+      // When form is successfully submitted, save current step info
+      // for updating UI after page reload
+      localStorage.setItem('lastWizardAction', 'stepChange');
+      
+      // For new campaigns on the last step, we need to ensure all required fields are filled
+      if (!isEditMode && document.querySelector('input[type="submit"][value="Submit"]') && 
+          !validateCurrentStep()) {
+        e.preventDefault();
+        showError('Please fill in all required fields before submitting');
+        return;
+      }
+    });
+    
+    // Check if there was a step change after page reload
+    if (localStorage.getItem('lastWizardAction') === 'stepChange') {
+      localStorage.removeItem('lastWizardAction');
+      // Update step availability after page reload
+      setTimeout(updateStepAvailability, 100);
+    }
+    
+    // Handle beforeunload event to warn about unsaved changes
+    window.addEventListener('beforeunload', function(e) {
+      if (formChanged) {
+        // Standard way of showing a confirmation dialog before leaving
+        e.preventDefault();
+        e.returnValue = ''; // This text will not be displayed in modern browsers
+        return ''; // This text will not be displayed in modern browsers
+      }
+    });
+  });
+</script>
 {% endblock %}

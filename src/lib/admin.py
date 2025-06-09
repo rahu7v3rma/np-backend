@@ -14,11 +14,13 @@ from openpyxl import Workbook, load_workbook
 
 from inventory.models import (
     ColorVariation,
+    Product,
     ProductColorVariationImage,
     ProductTextVariation,
     ProductVariation,
     TextVariation,
     Variation,
+    validate_sku_length,
 )
 
 
@@ -207,6 +209,12 @@ class ImportableExportableAdmin(TranslationAdmin):
                         )
                         record_field_values[current_column] = parsed_value
 
+                # Get the product kind before validation
+                product_kind = record_field_values.get('product_kind')
+                if 'sku' in record_field_values:
+                    # Validate SKU length based on product kind
+                    validate_sku_length(record_field_values['sku'], product_kind)
+
                 # the pk may or may not have been supplied
                 record_pk = record_field_values.pop(self.model._meta.pk.name, None)
 
@@ -239,6 +247,10 @@ class ImportableExportableAdmin(TranslationAdmin):
                     record.save()
 
                     records_created += 1
+
+                if product_kind == Product.ProductKindEnum.BUNDLE.name:
+                    sku_string = record_field_values.get('sku')
+                    record.create_bundle_items_from_sku(sku_string)
 
                 for col_idx, current_column in enumerate(columns):
                     if current_column in self.import_related_fields:

@@ -382,6 +382,9 @@ class PickAndPackProviderTestCase(TestCase):
             self.order_1.delivery_additional_details,
         )
 
+        # check that no bundles were sent to the api
+        self.assertEquals(api_request_body_json['BUNDLE'], '')
+
         # check that the lines sent to the api contain the single product
         api_request_lines = api_request_body_json['LINES']['LINE']
         self.assertEquals(len(api_request_lines), 1)
@@ -448,6 +451,9 @@ class PickAndPackProviderTestCase(TestCase):
             api_shipping_details['DELIVERYCOMMENTS'],
             self.order_2.delivery_additional_details,
         )
+
+        # check that no bundles were sent to the api
+        self.assertEquals(api_request_body_json['BUNDLE'], '')
 
         # check that the lines sent to the api contain the single product
         api_request_lines = api_request_body_json['LINES']['LINE']
@@ -538,6 +544,9 @@ class PickAndPackProviderTestCase(TestCase):
             '',
         )
 
+        # check that no bundles were sent to the api
+        self.assertEquals(api_request_body_json['BUNDLE'], '')
+
         # check that the lines sent to the api contain the single product
         api_request_lines = api_request_body_json['LINES']['LINE']
         self.assertEquals(len(api_request_lines), 1)
@@ -596,10 +605,11 @@ class SendPurchaseOrderToLogisticsCenterTestCase(TestCase):
             quantity_sent_to_logistics_center=0,
         )
 
-    @patch('logistics.tasks.send_purchase_order_to_logistics_center', return_value=True)
-    def test_task_triggered_on_purchase_order_approve(self, mock_send_task):
+    @override_settings(PAP_MESSAGE_TIMEZONE_NAME='UTC')
+    @patch('logistics.tasks.pick_and_pack_add_or_update_inbound', return_value=True)
+    def test_task_triggered_on_purchase_order_approve(self, mock_update_inbound):
         # mock is not called to begin with
-        self.assertEquals(mock_send_task.apply_async.call_count, 0)
+        self.assertEquals(mock_update_inbound.call_count, 0)
 
         # we can take an existing purchase order and change its status to
         # anything but approved, or create a new purchase order with any status
@@ -625,25 +635,27 @@ class SendPurchaseOrderToLogisticsCenterTestCase(TestCase):
         )
 
         # mock was not yet called
-        self.assertEquals(mock_send_task.apply_async.call_count, 0)
+        self.assertEquals(mock_update_inbound.call_count, 0)
 
         # update an existing purchase order's status to approved and the task
         # should be invoked
         self.purchase_order_1.approve()
 
         # mock was called
-        self.assertEquals(mock_send_task.apply_async.call_count, 1)
+        self.assertEquals(mock_update_inbound.call_count, 1)
         self.assertEquals(
-            mock_send_task.apply_async.call_args[0],
-            ((self.purchase_order_1.pk, LogisticsCenterEnum.PICK_AND_PACK),),
+            mock_update_inbound.call_args[0][0],
+            self.purchase_order_1,
         )
+
+        self.purchase_order_1.refresh_from_db()
 
         # approving a purchase order again should raise a validation error
         with self.assertRaises(ValidationError):
             self.purchase_order_1.approve()
 
         # mock was not called again
-        self.assertEquals(mock_send_task.apply_async.call_count, 1)
+        self.assertEquals(mock_update_inbound.call_count, 1)
 
     @responses.activate
     @override_settings(PAP_MESSAGE_TIMEZONE_NAME='UTC')
@@ -780,7 +792,7 @@ class SendOrderToLogisticsCenterTestCase(TestCase):
             brand=self.brand,
             supplier=self.supplier,
             name='product 6 name',
-            sku='4,5',
+            sku='4|1,5|2',
             cost_price=150,
             sale_price=160,
             product_type=Product.ProductTypeEnum.REGULAR.name,
@@ -796,12 +808,33 @@ class SendOrderToLogisticsCenterTestCase(TestCase):
             product=self.product_5,
             quantity=2,
         )
-        # a product with quotes
+        # a second bundle product
         self.product_7 = Product.objects.create(
             brand=self.brand,
             supplier=self.supplier,
-            name='product "7" name',
-            sku='7',
+            name='product 7 name',
+            sku='1|3,5|2',
+            cost_price=150,
+            sale_price=160,
+            product_type=Product.ProductTypeEnum.REGULAR.name,
+            product_kind=Product.ProductKindEnum.BUNDLE.name,
+        )
+        ProductBundleItem.objects.create(
+            bundle=self.product_7,
+            product=self.product_1,
+            quantity=3,
+        )
+        ProductBundleItem.objects.create(
+            bundle=self.product_7,
+            product=self.product_5,
+            quantity=2,
+        )
+        # a product with quotes
+        self.product_8 = Product.objects.create(
+            brand=self.brand,
+            supplier=self.supplier,
+            name='product "8" name',
+            sku='8',
             cost_price=150,
             sale_price=160,
             product_type=Product.ProductTypeEnum.REGULAR.name,
@@ -861,6 +894,10 @@ class SendOrderToLogisticsCenterTestCase(TestCase):
         employee_group_campaign_product_7 = EmployeeGroupCampaignProduct.objects.create(
             employee_group_campaign_id=employee_group_campaign,
             product_id=self.product_7,
+        )
+        employee_group_campaign_product_8 = EmployeeGroupCampaignProduct.objects.create(
+            employee_group_campaign_id=employee_group_campaign,
+            product_id=self.product_8,
         )
 
         # the order we need for testing outbound
@@ -945,7 +982,7 @@ class SendOrderToLogisticsCenterTestCase(TestCase):
             quantity=2,
         )
 
-        # an order with quotes everywhere
+        # an order with normal and multiple bundle items
         self.order_4 = Order.objects.create(
             campaign_employee_id=CampaignEmployee.objects.get(
                 campaign=campaign, employee=employee
@@ -954,18 +991,77 @@ class SendOrderToLogisticsCenterTestCase(TestCase):
             cost_from_budget=100,
             cost_added=0,
             status=Order.OrderStatusEnum.PENDING.name,
-            full_name='Test "name" 4',
-            phone_number='050000"0006',
-            additional_phone_number='050"000007',
-            delivery_city='City"4',
-            delivery_street='Main"4',
-            delivery_street_number='"4',
-            delivery_apartment_number='4"',
-            delivery_additional_details='Ad"ditional" 4',
+            full_name='Test name 4',
+            phone_number='0500000000',
+            additional_phone_number='050000001',
+            delivery_city='City4',
+            delivery_street='Main4',
+            delivery_street_number='4',
+            delivery_apartment_number='4',
+            delivery_additional_details='Additional 4',
+        )
+        OrderProduct.objects.create(
+            order_id=self.order_4,
+            product_id=self.employee_group_campaign_product_1,
+            quantity=1,
+        )
+        OrderProduct.objects.create(
+            order_id=self.order_4,
+            product_id=employee_group_campaign_product_6,
+            quantity=1,
         )
         OrderProduct.objects.create(
             order_id=self.order_4,
             product_id=employee_group_campaign_product_7,
+            quantity=2,
+        )
+
+        # an order with lots of bundle items that can break the 120 character
+        # limit
+        self.order_5 = Order.objects.create(
+            campaign_employee_id=CampaignEmployee.objects.get(
+                campaign=campaign, employee=employee
+            ),
+            order_date_time=datetime.now(),
+            cost_from_budget=100,
+            cost_added=0,
+            status=Order.OrderStatusEnum.PENDING.name,
+            full_name='Test name 5',
+            phone_number='0500000000',
+            additional_phone_number='050000001',
+            delivery_city='City5',
+            delivery_street='Main5',
+            delivery_street_number='5',
+            delivery_apartment_number='5',
+            delivery_additional_details='Additional 5',
+        )
+        OrderProduct.objects.create(
+            order_id=self.order_5,
+            product_id=employee_group_campaign_product_7,
+            quantity=20,
+        )
+
+        # an order with quotes everywhere
+        self.order_6 = Order.objects.create(
+            campaign_employee_id=CampaignEmployee.objects.get(
+                campaign=campaign, employee=employee
+            ),
+            order_date_time=datetime.now(),
+            cost_from_budget=100,
+            cost_added=0,
+            status=Order.OrderStatusEnum.PENDING.name,
+            full_name='Test "name" 6',
+            phone_number='050000"0006',
+            additional_phone_number='050"000007',
+            delivery_city='City"6',
+            delivery_street='Main"6',
+            delivery_street_number='"6',
+            delivery_apartment_number='6"',
+            delivery_additional_details='Ad"ditional" 6',
+        )
+        OrderProduct.objects.create(
+            order_id=self.order_6,
+            product_id=employee_group_campaign_product_8,
             quantity=1,
         )
 
@@ -1045,6 +1141,14 @@ class SendOrderToLogisticsCenterTestCase(TestCase):
             Order.OrderStatusEnum.SENT_TO_LOGISTIC_CENTER.name,
         )
 
+        # no bundles should have been sent to the provider
+        self.assertEquals(
+            json.loads(outbound_api_mock.calls[0].request.body)['DATACOLLECTION'][
+                'DATA'
+            ]['BUNDLE'],
+            '',
+        )
+
         # only the regular physical product should have been sent to the
         # provider
         api_request_lines = json.loads(outbound_api_mock.calls[0].request.body)[
@@ -1081,6 +1185,14 @@ class SendOrderToLogisticsCenterTestCase(TestCase):
             Order.OrderStatusEnum.SENT_TO_LOGISTIC_CENTER.name,
         )
 
+        # bundle skus should have been sent to the provider
+        self.assertEquals(
+            json.loads(outbound_api_mock.calls[0].request.body)['DATACOLLECTION'][
+                'DATA'
+            ]['BUNDLE'],
+            '4|1,5|2|||4|1,5|2',
+        )
+
         # bundled products should have been sent and not the bundle product
         api_request_lines = json.loads(outbound_api_mock.calls[0].request.body)[
             'DATACOLLECTION'
@@ -1095,6 +1207,105 @@ class SendOrderToLogisticsCenterTestCase(TestCase):
 
     @responses.activate
     @override_settings(PAP_MESSAGE_TIMEZONE_NAME='UTC')
+    def test_order_multiple_bundles_and_other_products(self):
+        outbound_api_mock = responses.add(
+            responses.POST,
+            settings.PAP_OUTBOUND_URL,
+            json={},
+            status=200,
+        )
+
+        # the status field should be pending
+        self.order_4.refresh_from_db()
+        self.assertEquals(self.order_4.status, Order.OrderStatusEnum.PENDING.name)
+
+        send_order_to_logistics_center.apply_async(
+            (self.order_4.pk, LogisticsCenterEnum.PICK_AND_PACK)
+        )
+
+        # each mock should have been called once
+        self.assertEquals(len(outbound_api_mock.calls), 1)
+
+        # the status field was set to sent to logistics center
+        self.order_4.refresh_from_db()
+        self.assertEquals(
+            self.order_4.status,
+            Order.OrderStatusEnum.SENT_TO_LOGISTIC_CENTER.name,
+        )
+
+        # bundle skus should have been sent to the provider
+        self.assertEquals(
+            json.loads(outbound_api_mock.calls[0].request.body)['DATACOLLECTION'][
+                'DATA'
+            ]['BUNDLE'],
+            '4|1,5|2|||1|3,5|2|||1|3,5|2',
+        )
+
+        # bundled products should have been sent and not the bundle product
+        api_request_lines = json.loads(outbound_api_mock.calls[0].request.body)[
+            'DATACOLLECTION'
+        ]['DATA']['LINES']['LINE']
+        self.assertEquals(len(api_request_lines), 5)
+        self.assertEquals(api_request_lines[0]['SKU'], self.product_1.sku)
+        self.assertEquals(api_request_lines[0]['QTYORIGINAL'], 1)
+        self.assertEquals(api_request_lines[1]['SKU'], self.product_4.sku)
+        self.assertEquals(api_request_lines[1]['QTYORIGINAL'], 1)
+        self.assertEquals(api_request_lines[2]['SKU'], self.product_5.sku)
+        self.assertEquals(api_request_lines[2]['QTYORIGINAL'], 2)
+        self.assertEquals(api_request_lines[3]['SKU'], self.product_1.sku)
+        self.assertEquals(api_request_lines[3]['QTYORIGINAL'], 6)
+        self.assertEquals(api_request_lines[4]['SKU'], self.product_5.sku)
+        self.assertEquals(api_request_lines[4]['QTYORIGINAL'], 4)
+
+    @responses.activate
+    @override_settings(PAP_MESSAGE_TIMEZONE_NAME='UTC')
+    def test_order_long_bundle_string(self):
+        outbound_api_mock = responses.add(
+            responses.POST,
+            settings.PAP_OUTBOUND_URL,
+            json={},
+            status=200,
+        )
+
+        # the status field should be pending
+        self.order_5.refresh_from_db()
+        self.assertEquals(self.order_5.status, Order.OrderStatusEnum.PENDING.name)
+
+        send_order_to_logistics_center.apply_async(
+            (self.order_5.pk, LogisticsCenterEnum.PICK_AND_PACK)
+        )
+
+        # each mock should have been called once
+        self.assertEquals(len(outbound_api_mock.calls), 1)
+
+        # the status field was set to sent to logistics center
+        self.order_5.refresh_from_db()
+        self.assertEquals(
+            self.order_5.status,
+            Order.OrderStatusEnum.SENT_TO_LOGISTIC_CENTER.name,
+        )
+
+        # bundle skus should have been sent to the provider, but shortened to
+        # 120 characters
+        self.assertEquals(
+            json.loads(outbound_api_mock.calls[0].request.body)['DATACOLLECTION'][
+                'DATA'
+            ]['BUNDLE'],
+            '1|3,5|2|||1|3,5|2|||1|3,5|2|||1|3,5|2|||1|3,5|2|||1|3,5|2|||1|3,5|2|||1|3,5|2|||1|3,5|2|||1|3,5|2|||1|3,5|2|||1|3,5|2|||',
+        )
+
+        # bundled products should have been sent and not the bundle product
+        api_request_lines = json.loads(outbound_api_mock.calls[0].request.body)[
+            'DATACOLLECTION'
+        ]['DATA']['LINES']['LINE']
+        self.assertEquals(len(api_request_lines), 2)
+        self.assertEquals(api_request_lines[0]['SKU'], self.product_1.sku)
+        self.assertEquals(api_request_lines[0]['QTYORIGINAL'], 60)
+        self.assertEquals(api_request_lines[1]['SKU'], self.product_5.sku)
+        self.assertEquals(api_request_lines[1]['QTYORIGINAL'], 40)
+
+    @responses.activate
+    @override_settings(PAP_MESSAGE_TIMEZONE_NAME='UTC')
     def test_order_fields_with_quotes(self):
         outbound_api_mock = responses.add(
             responses.POST,
@@ -1104,7 +1315,7 @@ class SendOrderToLogisticsCenterTestCase(TestCase):
         )
 
         send_order_to_logistics_center.apply_async(
-            (self.order_4.pk, LogisticsCenterEnum.PICK_AND_PACK)
+            (self.order_6.pk, LogisticsCenterEnum.PICK_AND_PACK)
         )
 
         # each mock should have been called once
@@ -1117,11 +1328,11 @@ class SendOrderToLogisticsCenterTestCase(TestCase):
         self.assertEquals(
             json_request_data['CONTACT'],
             {
-                'STREET1': 'Main4 4',
-                'STREET2': 'דירה 4',
-                'CITY': 'City4',
-                'CONTACT1NAME': 'Test name 4',
-                'CONTACT2NAME': 'Test name 4',
+                'STREET1': 'Main6 6',
+                'STREET2': 'דירה 6',
+                'CITY': 'City6',
+                'CONTACT1NAME': 'Test name 6',
+                'CONTACT2NAME': 'Test name 6',
                 'CONTACT1PHONE': '0500000006',
                 'CONTACT2PHONE': '050000007',
                 'CONTACT1EMAIL': 'test1@test.test',
@@ -1130,7 +1341,7 @@ class SendOrderToLogisticsCenterTestCase(TestCase):
         )
         self.assertEquals(
             json_request_data['SHIPPINGDETAIL'],
-            {'DELIVERYCOMMENTS': 'Additional 4'},
+            {'DELIVERYCOMMENTS': 'Additional 6'},
         )
         self.assertEquals(
             json_request_data['LINES'],
@@ -1139,10 +1350,10 @@ class SendOrderToLogisticsCenterTestCase(TestCase):
                     {
                         'ORDERLINE': 0,
                         'REFERENCEORDLINE': 0,
-                        'SKU': '7',
+                        'SKU': '8',
                         'QTYORIGINAL': 1,
                         'INVENTORYSTATUS': 'AVAILABLE',
-                        'SKUDESCRIPTION': 'product 7 name',
+                        'SKUDESCRIPTION': 'product 8 name',
                         'MANUFACTURERSKU': None,
                     },
                 ],

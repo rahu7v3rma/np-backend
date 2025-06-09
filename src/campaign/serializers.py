@@ -154,6 +154,7 @@ class CampaignSerializer(serializers.ModelSerializer):
             'login_page_image',
             'login_page_mobile_image',
             'campaign_type',
+            'status',
         )
 
     def get_organization_name(self, obj):
@@ -982,6 +983,7 @@ class OrderExportSerializer(serializers.ModelSerializer):
         read_only=True, source='campaign_employee_id.employee.employee_group'
     )
     organization = serializers.SerializerMethodField()
+    dc_status_last_changed = serializers.SerializerMethodField()
 
     class Meta:
         model = Order
@@ -989,6 +991,18 @@ class OrderExportSerializer(serializers.ModelSerializer):
 
     def get_organization(self, obj):
         return obj.campaign_employee_id.campaign.organization
+
+    def get_dc_status_last_changed(self, obj):
+        """
+        This method formats `dc_status_last_changed` into a specific date format.
+        If the datetime is timezone-aware, it converts it to the local time and
+        then formats it.
+        """
+        dc_status_last_changed = obj.dc_status_last_changed
+
+        if dc_status_last_changed:
+            return dc_status_last_changed.strftime('%d/%m/%Y %H:%M')
+        return None
 
 
 class CampaignProductsGetSerializer(serializers.Serializer):
@@ -1024,7 +1038,7 @@ class CartAddProductSerializer(serializers.Serializer):
     def validate(self, data):
         product_id = data.get('product_id')
         product = Product.objects.filter(id=product_id).first()
-        if product and product.remaining_quantity < data.get('quantity'):
+        if product and product.product_quantity < data.get('quantity'):
             raise serializers.ValidationError(
                 {
                     'quantity': gettext(
@@ -1033,7 +1047,7 @@ class CartAddProductSerializer(serializers.Serializer):
                             'The remaining quantity is %(remaining_quantity)d.'
                         )
                     )
-                    % {'remaining_quantity': product.remaining_quantity}
+                    % {'remaining_quantity': product.product_quantity}
                 }
             )
         return data
@@ -1466,3 +1480,22 @@ class OrganizationProductPutSerializer(serializers.ModelSerializer):
     class Meta:
         model = OrganizationProduct
         fields = '__all__'
+
+
+class CampaignEmployeeSendInvitationPostSerializer(serializers.Serializer):
+    campaign_employees = serializers.ListField(
+        child=serializers.IntegerField(),
+        required=True,
+        min_length=1,
+    )
+    send_invitation_type = serializers.ListField(
+        child=serializers.ChoiceField(choices=('email', 'sms'), required=True),
+        required=True,
+        min_length=1,
+    )
+    campaign_id = serializers.IntegerField(required=True)
+
+
+class EmployeeGroupCampaignProductPutSerializer(serializers.Serializer):
+    product_id = serializers.IntegerField(required=True)
+    company_cost_per_employee = serializers.IntegerField(required=False)

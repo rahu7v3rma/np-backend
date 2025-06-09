@@ -695,7 +695,6 @@ def get_xlsx_http_campaign_response(
             )
 
         money_product_total_cost = 0
-        physical_product_total_cost = 0
 
         for product in products_data.values():
             if product.get('product_kind') == Product.ProductKindEnum.MONEY.name:
@@ -703,16 +702,13 @@ def get_xlsx_http_campaign_response(
                     'total_cost'
                 )
             else:
-                physical_product_total_cost = physical_product_total_cost + product.get(
-                    'total_cost'
-                )
                 continue
 
             ws_group.append(
                 [
                     product.get('product_name'),
                     product.get('quantity'),
-                    f"{product.get('client_discount')}%"
+                    f'{product.get("client_discount")}%'
                     if product.get('client_discount')
                     else product.get('client_discount'),
                     product.get('discount_to'),
@@ -726,7 +722,7 @@ def get_xlsx_http_campaign_response(
         group_summary_cost.update(
             {
                 f'group_summary_{group_summary.pk}': {
-                    'physical_product_total_cost': physical_product_total_cost,
+                    'physical_product_total_cost': group_summary.physical_total_cost,
                     'money_product_total_cost': money_product_total_cost,
                 }
             }
@@ -741,7 +737,7 @@ def get_xlsx_http_campaign_response(
                 '',
                 '',
                 '',
-                physical_product_total_cost,
+                group_summary.physical_total_cost,
             ]
         )
         ws_group.append(
@@ -766,7 +762,7 @@ def get_xlsx_http_campaign_response(
                 '',
                 '',
                 '',
-                money_product_total_cost + physical_product_total_cost,
+                money_product_total_cost + group_summary.physical_total_cost,
             ]
         )
 

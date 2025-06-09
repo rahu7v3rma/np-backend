@@ -2,6 +2,7 @@ from enum import Enum
 
 from django.conf import settings
 from django.core.exceptions import ValidationError
+from django.core.validators import MinValueValidator
 from django.db import models
 
 from campaign.models import Order, OrderProduct
@@ -54,8 +55,7 @@ class PurchaseOrder(models.Model):
             for p in self.products:
                 if p.product_id.sku and len(p.product_id.sku) > 22:
                     errors.append(
-                        f'Product {p.product_id.name} has a sku value which '
-                        'is too long'
+                        f'Product {p.product_id.name} has a sku value which is too long'
                     )
                 if p.product_id.reference and len(p.product_id.reference) > 22:
                     errors.append(
@@ -65,14 +65,6 @@ class PurchaseOrder(models.Model):
 
             if errors:
                 raise ValidationError(', '.join(errors))
-
-            self.status = PurchaseOrder.Status.APPROVED.name
-
-            # use this flag to let the pre-save signak know this change is made
-            # from the right place
-            self._approved_by_func = True
-            self.save(update_fields=['status'])
-            delattr(self, '_approved_by_func')
 
             # we only have one active logistics provider (=center) at the moment,
             # but in the future some stock and orders may be managed by one while
@@ -85,6 +77,9 @@ class PurchaseOrder(models.Model):
                 f'Purchase order {self.po_number} is already approved'
             )
 
+    def __str__(self):
+        return f'{self.id}'
+
 
 class PurchaseOrderProduct(models.Model):
     product_id = models.ForeignKey('inventory.Product', on_delete=models.CASCADE)
@@ -92,6 +87,14 @@ class PurchaseOrderProduct(models.Model):
     quantity_ordered = models.PositiveIntegerField()
     quantity_sent_to_logistics_center = models.PositiveIntegerField()
     variations = models.JSONField(null=True, blank=True)
+    voucher_value = models.FloatField(
+        blank=True,
+        null=True,
+        validators=[MinValueValidator(0.0)],
+    )
+    order_product = models.ForeignKey(
+        'campaign.OrderProduct', on_delete=models.SET_NULL, null=True, blank=True
+    )
 
     @property
     def total_cost(self):
@@ -191,6 +194,30 @@ class EmployeeOrderProduct(OrderProduct):
         proxy = True
         verbose_name = 'Order Summary'
         verbose_name_plural = 'Order Summaries'
+
+
+class RegularOrderSummary(EmployeeOrderProduct):
+    class Meta:
+        proxy = True
+        app_label = EmployeeOrderProduct._meta.app_label
+        verbose_name = 'Order Summaries – Regular'
+        verbose_name_plural = 'Order Summaries – Regular'
+
+
+class SupplierOrderSummary(EmployeeOrderProduct):
+    class Meta:
+        proxy = True
+        app_label = EmployeeOrderProduct._meta.app_label
+        verbose_name = 'Order Summaries – Sent by Supplier'
+        verbose_name_plural = 'Order Summaries – Sent by Supplier'
+
+
+class VoucherOrderSummary(EmployeeOrderProduct):
+    class Meta:
+        proxy = True
+        app_label = EmployeeOrderProduct._meta.app_label
+        verbose_name = 'Order Summaries – Vouchers'
+        verbose_name_plural = 'Order Summaries – Vouchers'
 
 
 class LogisticsCenterStockSnapshot(models.Model):

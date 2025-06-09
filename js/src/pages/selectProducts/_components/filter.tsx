@@ -14,6 +14,7 @@ import { useNPConfig } from '@/contexts/npConfig';
 import { getCatgoriesSuppliersTags } from '@/services/api';
 import { extractFromNpConfig } from '@/utils/config';
 
+import DjangoAutocomplete from './djangoAutocomplete';
 import Loader from './loader';
 import Options from './options';
 
@@ -98,7 +99,7 @@ interface Props {
     brandId?: number,
     categoryId?: number,
     supplierId?: number,
-    tagId?: number,
+    tagIds?: number[],
     employeeGroupId?: number,
     productKind?: string,
     quickOfferId?: number,
@@ -108,6 +109,7 @@ interface Props {
     googlePriceMax?: number,
   ) => void;
   budget: number;
+  company_cost: number;
   selectedProductIds: ProductIds[];
   products: Products[];
   baseSPAAssetsUrl?: string;
@@ -120,6 +122,7 @@ interface Props {
 const Filter = ({
   applyFilter,
   budget,
+  company_cost,
   selectedProductIds,
   products,
   baseSPAAssetsUrl,
@@ -149,7 +152,7 @@ const Filter = ({
   const [brandId, setBrandId] = useState<number | undefined>(undefined);
   const [supplierId, setSupplierId] = useState<number | undefined>(undefined);
   const [categoryId, setCategoryId] = useState<number | undefined>(undefined);
-  const [tagId, setTagId] = useState<number | undefined>(undefined);
+  const [tagIds, setTagIds] = useState<number[]>([]);
   const [query, setQuery] = useState<string | undefined>(undefined);
   const [giftsInBudget, setGiftsInBudget] = useState<boolean>(false);
   const [selectedProducts, setSelectedProducts] = useState<boolean>(false);
@@ -283,7 +286,7 @@ const Filter = ({
         brandId,
         supplierId,
         categoryId,
-        tagId,
+        tagIds,
         employeeGroupId,
         productKind,
         quickOfferId,
@@ -303,7 +306,7 @@ const Filter = ({
     brandId,
     categoryId,
     supplierId,
-    tagId,
+    tagIds,
     employeeGroupId,
     productKind,
     quickOfferId,
@@ -318,19 +321,6 @@ const Filter = ({
     () => extractFromNpConfig(config, 'type'),
     [config],
   );
-
-  const quick_offers = useMemo(() => {
-    const campaign_type = extractFromNpConfig(config, 'type');
-    return campaign_type === 'campaign'
-      ? [
-          ...[{ id: 0, name: '----' }],
-          ...(extractFromNpConfig(config, 'quick_offers') as {
-            id: number;
-            name: string;
-          }[]),
-        ]
-      : [];
-  }, [config]);
 
   return loading ? (
     <div className="m-auto">
@@ -371,7 +361,7 @@ const Filter = ({
           />
         </div>
         <label className="block text-sm font-medium leading-6 text-gray-900">
-          Organization price:
+          Company Cost Per Employee:
         </label>
         <div className="flex gap-2 mb-6">
           <input
@@ -384,7 +374,7 @@ const Filter = ({
               )
             }
             type="number"
-            placeholder="min"
+            placeholder={`min (current: ${company_cost})`}
             className="block w-full rounded-md border-0 px-3.5 py-2 text-gray-900 shadow-sm ring-1 ring-inset ring-gray-300 placeholder:text-gray-400 focus:ring-2 focus:ring-inset focus:ring-indigo-600 sm:text-sm sm:leading-6"
           />
           <input
@@ -398,7 +388,7 @@ const Filter = ({
             }
             disabled={giftsInBudget}
             type="number"
-            placeholder="max"
+            placeholder={`max (current: ${company_cost})`}
             className="block w-full rounded-md border-0 px-3.5 py-2 text-gray-900 shadow-sm ring-1 ring-inset ring-gray-300 placeholder:text-gray-400 focus:ring-2 focus:ring-inset focus:ring-indigo-600 sm:text-sm sm:leading-6"
           />
         </div>
@@ -467,43 +457,50 @@ const Filter = ({
         <label className="block text-sm font-medium leading-6 text-gray-900">
           Brand Name:
         </label>
-        <Options
-          onChangeValue={(val) => setBrandId(val.id || undefined)}
-          data={brands}
+        <DjangoAutocomplete
+          linkPath="/inventory/brand-product-autocomplete"
+          onValueChange={(value) =>
+            setBrandId(Number(value?.value) || undefined)
+          }
         />
         <label className="mt-6 block text-sm font-medium leading-6 text-gray-900">
           Category:
         </label>
-        <Options
-          onChangeValue={(val) => setCategoryId(val.id || undefined)}
-          data={categories}
+        <DjangoAutocomplete
+          linkPath="/inventory/category-product-autocomplete"
+          onValueChange={(value) =>
+            setCategoryId(Number(value?.value) || undefined)
+          }
         />
         <label className=" mt-6 block text-sm font-medium leading-6 text-gray-900">
           Supplier:
         </label>
-        <Options
-          onChangeValue={(val) => setSupplierId(val.id || undefined)}
-          data={suppliers}
-          translate={true}
+        <DjangoAutocomplete
+          linkPath="/inventory/supplier-product-autocomplete"
+          onValueChange={(value) =>
+            setSupplierId(Number(value?.value) || undefined)
+          }
         />
         <label className=" mt-6 block text-sm font-medium leading-6 text-gray-900">
-          Tag:
+          Tags:
         </label>
-        <Options
-          onChangeValue={(val) => setTagId(val.id || undefined)}
-          data={tags}
-          style="mb-6"
-          translate={true}
+        <DjangoAutocomplete
+          isMulti={true}
+          linkPath="/inventory/tag-product-autocomplete"
+          onValuesChange={(value) =>
+            setTagIds(value.map((el) => Number(el.value)))
+          }
         />
         {campaign_type === 'campaign' && (
           <>
-            <label className="block text-sm font-medium leading-6 text-gray-900">
+            <label className="block text-sm font-medium leading-6 text-gray-900 mt-6">
               Products From QuickOffer:
             </label>
-            <Options
-              onChangeValue={(val) => setQuickOfferId(val.id || undefined)}
-              data={quick_offers}
-              style="mb-6"
+            <DjangoAutocomplete
+              linkPath="/campaign/quick-offer-autocomplete"
+              onValueChange={(value) =>
+                setQuickOfferId(Number(value) || undefined)
+              }
               translate={true}
             />
             <label className="block text-sm font-medium leading-6 text-gray-900">

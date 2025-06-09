@@ -5,16 +5,21 @@
 {{ block.super }}
 <script src="https://cdn.jsdelivr.net/npm/axios/dist/axios.min.js"></script>
 <script src="{% static "js/po_requests.js" %}"></script>
+<script>
+  const initialPOData = {{ initial_po_data|safe }};
+</script>
 <script src="{% static "js/po_populate.js" %}"></script>
 <script>
   window.addEventListener('load', function (){
       let _products = [];
-      {% for prod in product_instance.products.all %}
-            _products.push([{{ prod.product_id.id }}, {{ prod.quantity_ordered }}, {{ prod.id }}])
+      {% for prod in po_products %}
+            _products.push([{{ prod.po_product_id }}, {{ prod.po_quantity }}, {{ prod.po_id }}, {{ prod.po_product_voucher_value|default_if_none:'null' }}])
       {% endfor %}
-      suppliersOrder('{{ product_instance.supplier.name }}', _products, '{{ product_instance.notes }}', '{{ product_instance.id }}', '{{ product_instance.status }}', '{{ variations }}');
+      suppliersOrder('{{ product_instance.supplier.name|safe }}', _products, '{{ product_instance.notes }}', '{{ product_instance.id }}', '{{ product_instance.status }}', '{{ variations }}');
       let elements = document.getElementById("content").getElementsByTagName("h2");
-      if (elements) elements[0].style.display = "none";
+      if (elements && elements.length > 0) {
+        elements[0].style.display = "none";
+      }
   }, false);
 </script>
 {% endblock %}
@@ -114,33 +119,33 @@
           <button
             type="submit"
             onclick="sendPO('{{ product_instance.id }}', true)"
-            class=" h-[69px] mb-[42px] rounded-lg bg-[#5C5C5C] hover:bg-black"
+            class="saveButton h-[69px] mb-[42px] rounded-lg bg-[#5C5C5C] hover:bg-black"
           >
             Send PO
           </button>
           {% if product_instance %}
             <button
               onclick="savePO('APPROVED', '{{ product_instance.id }}', false)"
-              class="h-[69px] mb-[42px] rounded-lg bg-[#5C5C5C] hover:bg-black"
+              class="saveButton h-[69px] mb-[42px] rounded-lg bg-[#5C5C5C] hover:bg-black"
             >
               Approve PO
             </button>
             <button
               onclick="savePO('CANCELLED', '{{ product_instance.id }}', false)"
-              class="h-[69px] rounded-lg bg-[#5C5C5C] hover:bg-black"
+              class="saveButton h-[69px] rounded-lg bg-[#5C5C5C] hover:bg-black"
             >
               Cancel PO
             </button>
           {% else %}
             <button
               onclick="savePO('PENDING', '{{ product_instance.id }}', false)"
-              class="h-[69px] mb-[42px] rounded-lg bg-[#5C5C5C] hover:bg-black"
+              class="saveButton h-[69px] mb-[42px] rounded-lg bg-[#5C5C5C] hover:bg-black"
             >
               Save and continue later
             </button>
             <button
               onclick="savePO('PENDING', '{{ product_instance.id }}', true)"
-              class="h-[69px] rounded-lg bg-[#5C5C5C] hover:bg-black"
+              class="saveButton h-[69px] rounded-lg bg-[#5C5C5C] hover:bg-black"
             >
               Save and keep edit
             </button>

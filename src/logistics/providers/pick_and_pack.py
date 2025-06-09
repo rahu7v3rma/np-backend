@@ -1,4 +1,5 @@
 from datetime import datetime, timezone
+import json
 import logging
 from typing import Optional
 
@@ -35,44 +36,48 @@ logger = logging.getLogger(__name__)
 def add_or_update_inbound(
     purchase_order: PurchaseOrder, inbound_date_time: datetime
 ) -> bool:
+    request_body = {
+        'DATACOLLECTION': {
+            'DATA': {
+                'CONSIGNEE': settings.PAP_CONSIGNEE,
+                'ORDERID': _platform_id_to_pap_id(purchase_order.pk),
+                'ORDERTYPE': 'PO',  # our orders are always POs (purchase orders)
+                # 'CONTAINER': '',
+                # 'REFERENCEORD': '',
+                'SOURCECOMPANY': remove_unsupported_chars(
+                    purchase_order.supplier.name_he or purchase_order.supplier.name_en
+                ),
+                'COMPANYTYPE': 'VENDOR',  # suppliers are always VENDORs
+                'CREATEDATE': inbound_date_time.strftime('%d-%m-%Y'),
+                # 'EXPECTEDDATE': '',
+                # 'ROUTE': '',
+                # 'NOTES': '',
+                'LINES': {
+                    'LINE': [
+                        {
+                            'ORDERLINE': i,
+                            'REFERENCEORDLINE': i,
+                            'SKU': p.product_id.sku,
+                            'QTYORDERED': p.quantity_ordered,
+                            'INVENTORYSTATUS': 'AVAILABLE',  # always AVAILABLE
+                            'SKUDESCRIPTION': remove_unsupported_chars(
+                                p.product_id.name_he or p.product_id.name_en
+                            ),
+                            'MANUFACTURERSKU': p.product_id.reference,
+                        }
+                        for i, p in enumerate(purchase_order.products)
+                    ]
+                },
+            }
+        }
+    }
+
+    if settings.PAP_VERBOSE:
+        logger.info(f'pap sending inbound payload: {json.dumps(request_body)}')
+
     response = requests.post(
         settings.PAP_INBOUND_URL,
-        json={
-            'DATACOLLECTION': {
-                'DATA': {
-                    'CONSIGNEE': settings.PAP_CONSIGNEE,
-                    'ORDERID': _platform_id_to_pap_id(purchase_order.pk),
-                    'ORDERTYPE': 'PO',  # our orders are always POs (purchase orders)
-                    # 'CONTAINER': '',
-                    # 'REFERENCEORD': '',
-                    'SOURCECOMPANY': remove_unsupported_chars(
-                        purchase_order.supplier.name_he
-                        or purchase_order.supplier.name_en
-                    ),
-                    'COMPANYTYPE': 'VENDOR',  # suppliers are always VENDORs
-                    'CREATEDATE': inbound_date_time.strftime('%d-%m-%Y'),
-                    # 'EXPECTEDDATE': '',
-                    # 'ROUTE': '',
-                    # 'NOTES': '',
-                    'LINES': {
-                        'LINE': [
-                            {
-                                'ORDERLINE': i,
-                                'REFERENCEORDLINE': i,
-                                'SKU': p.product_id.sku,
-                                'QTYORDERED': p.quantity_ordered,
-                                'INVENTORYSTATUS': 'AVAILABLE',  # always AVAILABLE
-                                'SKUDESCRIPTION': remove_unsupported_chars(
-                                    p.product_id.name_he or p.product_id.name_en
-                                ),
-                                'MANUFACTURERSKU': p.product_id.reference,
-                            }
-                            for i, p in enumerate(purchase_order.products)
-                        ]
-                    },
-                }
-            }
-        },
+        json=request_body,
     )
 
     if response.status_code != 200:
@@ -186,90 +191,108 @@ def add_or_update_outbound(
         # for normal orders orian is the delivery value
         route = 'ORIAN'
 
+    # build a list of bundle skus. multiple-quantity products should have their
+    # skus displayed as many times as they were ordered
+    bundle_skus = []
+    for op in order.orderproduct_set.all():
+        if op.product_id.product_id.product_kind == Product.ProductKindEnum.BUNDLE.name:
+            for _ in range(op.quantity):
+                bundle_skus.append(op.product_id.product_id.sku)
+
+    bundle_skus_str = '|||'.join(bundle_skus)
+    if len(bundle_skus_str) > 120:
+        logger.warn(f'pap oubound bundle string too long: {bundle_skus_str}')
+        bundle_skus_str = bundle_skus_str[:120]
+
+    request_body = {
+        'DATACOLLECTION': {
+            'DATA': {
+                'CONSIGNEE': settings.PAP_CONSIGNEE,
+                'ORDERID': order.order_id,
+                # our orders are always shipped to customers
+                'ORDERTYPE': 'CUSTOMER',
+                # reference order field should either have a value to group
+                # b2b orders shipping to the same location together or no
+                # value at all for orders shipping to employees' homes
+                'REFERENCEORD': reference_order,
+                # company name
+                'COMPANYNAME': outbound_company_name,
+                # outgoing is only sent to customer companies
+                'COMPANYTYPE': 'CUSTOMER',
+                'REQUESTEDDATE': outbound_date_time.strftime('%d-%m-%Y'),
+                # 'SCHEDULEDDATE': '',
+                'CREATEDATE': outbound_date_time.strftime('%d-%m-%Y'),
+                'ROUTE': route,
+                'NOTES': '',
+                'SHIPPINGDETAIL': {
+                    # 'CHECK1DATE': '',
+                    # 'CHECK1AMOUNT': '',
+                    # 'CHECK2DATE': '',
+                    # 'CHECK2AMOUNT': '',
+                    # 'CHECK3DATE': '',
+                    # 'CHECK3AMOUNT': '',
+                    # 'CASH': '',
+                    # 'COLLECT': '',
+                    # 'FRIDAY': '',
+                    'DELIVERYCOMMENTS': outbound_delivery_additional_details,
+                    # 'DELIVERYCONFIRMATION': '',
+                    # 'FROMSCHEDUALEDELIVERYDATE': '',
+                    # 'TOSCHEDUALEDELIVERYDATE': '',
+                },
+                'CONTACT': {
+                    'STREET1': (
+                        f'{outbound_delivery_street} {outbound_delivery_street_number}'
+                    ),
+                    'STREET2': f'דירה {outbound_delivery_apartment_number}'
+                    if outbound_delivery_apartment_number
+                    else '',
+                    'CITY': outbound_delivery_city,
+                    # 'STATE': '',
+                    # 'ZIP': '',
+                    'CONTACT1NAME': outbound_contact_1_name,
+                    'CONTACT2NAME': outbound_contact_2_name,
+                    'CONTACT1PHONE': outbound_contact_1_phone_number,
+                    'CONTACT2PHONE': outbound_contact_2_phone_number,
+                    # 'CONTACT1FAX': '',
+                    # 'CONTACT2FAX': '',
+                    'CONTACT1EMAIL': outbound_contact_1_email,
+                    'CONTACT2EMAIL': outbound_contact_2_email,
+                },
+                'BUNDLE': bundle_skus_str,
+                'LINES': {
+                    'LINE': [
+                        {
+                            'ORDERLINE': i,
+                            'REFERENCEORDLINE': i,
+                            'SKU': p['sku'],
+                            'QTYORIGINAL': p['quantity'],
+                            # 'NOTES': '',
+                            # 'BATCH': '',
+                            # 'SERIAL': '',
+                            'INVENTORYSTATUS': 'AVAILABLE',  # always AVAILABLE
+                            'SKUDESCRIPTION': remove_unsupported_chars(
+                                p['name_he'] or p['name_en']
+                            ),
+                            'MANUFACTURERSKU': p['reference'],
+                        }
+                        for i, p in enumerate(order_products)
+                    ]
+                },
+            }
+        }
+    }
+
+    if settings.PAP_VERBOSE:
+        logger.info(f'pap sending outbound payload: {json.dumps(request_body)}')
+
     response = requests.post(
         settings.PAP_OUTBOUND_URL,
-        json={
-            'DATACOLLECTION': {
-                'DATA': {
-                    'CONSIGNEE': settings.PAP_CONSIGNEE,
-                    'ORDERID': order.order_id,
-                    # our orders are always shipped to customers
-                    'ORDERTYPE': 'CUSTOMER',
-                    # reference order field should either have a value to group
-                    # b2b orders shipping to the same location together or no
-                    # value at all for orders shipping to employees' homes
-                    'REFERENCEORD': reference_order,
-                    # company name
-                    'COMPANYNAME': outbound_company_name,
-                    # outgoing is only sent to customer companies
-                    'COMPANYTYPE': 'CUSTOMER',
-                    'REQUESTEDDATE': outbound_date_time.strftime('%d-%m-%Y'),
-                    # 'SCHEDULEDDATE': '',
-                    'CREATEDATE': outbound_date_time.strftime('%d-%m-%Y'),
-                    'ROUTE': route,
-                    'NOTES': '',
-                    'SHIPPINGDETAIL': {
-                        # 'CHECK1DATE': '',
-                        # 'CHECK1AMOUNT': '',
-                        # 'CHECK2DATE': '',
-                        # 'CHECK2AMOUNT': '',
-                        # 'CHECK3DATE': '',
-                        # 'CHECK3AMOUNT': '',
-                        # 'CASH': '',
-                        # 'COLLECT': '',
-                        # 'FRIDAY': '',
-                        'DELIVERYCOMMENTS': outbound_delivery_additional_details,
-                        # 'DELIVERYCONFIRMATION': '',
-                        # 'FROMSCHEDUALEDELIVERYDATE': '',
-                        # 'TOSCHEDUALEDELIVERYDATE': '',
-                    },
-                    'CONTACT': {
-                        'STREET1': (
-                            f'{outbound_delivery_street} '
-                            f'{outbound_delivery_street_number}'
-                        ),
-                        'STREET2': f'דירה {outbound_delivery_apartment_number}'
-                        if outbound_delivery_apartment_number
-                        else '',
-                        'CITY': outbound_delivery_city,
-                        # 'STATE': '',
-                        # 'ZIP': '',
-                        'CONTACT1NAME': outbound_contact_1_name,
-                        'CONTACT2NAME': outbound_contact_2_name,
-                        'CONTACT1PHONE': outbound_contact_1_phone_number,
-                        'CONTACT2PHONE': outbound_contact_2_phone_number,
-                        # 'CONTACT1FAX': '',
-                        # 'CONTACT2FAX': '',
-                        'CONTACT1EMAIL': outbound_contact_1_email,
-                        'CONTACT2EMAIL': outbound_contact_2_email,
-                    },
-                    'LINES': {
-                        'LINE': [
-                            {
-                                'ORDERLINE': i,
-                                'REFERENCEORDLINE': i,
-                                'SKU': p['sku'],
-                                'QTYORIGINAL': p['quantity'],
-                                # 'NOTES': '',
-                                # 'BATCH': '',
-                                # 'SERIAL': '',
-                                'INVENTORYSTATUS': 'AVAILABLE',  # always AVAILABLE
-                                'SKUDESCRIPTION': remove_unsupported_chars(
-                                    p['name_he'] or p['name_en']
-                                ),
-                                'MANUFACTURERSKU': p['reference'],
-                            }
-                            for i, p in enumerate(order_products)
-                        ]
-                    },
-                }
-            }
-        },
+        json=request_body,
     )
 
     if response.status_code != 200:
         logger.error(
-            'failed to add or update outbound with status '
+            'pap failed to add or update outbound with status '
             f'{response.status_code} and response {response.text}'
         )
         return False

@@ -87,6 +87,7 @@ env = environ.Env(
     PAP_CONSIGNEE=(str, None),
     PAP_ID_PREFIX=(str, ''),
     PAP_MESSAGE_TIMEZONE_NAME=(str, None),
+    PAP_VERBOSE=(bool, False),
     CC_RECIPIENT_EMAILS=(list, []),
     REPLY_TO_ADDRESSES_EMAILS=(list, []),
     STOCK_LIMIT_THRESHOLD=(int, None),
@@ -483,6 +484,7 @@ PAP_OUTBOUND_URL = env('PAP_OUTBOUND_URL')
 PAP_CONSIGNEE = env('PAP_CONSIGNEE')
 PAP_ID_PREFIX = env('PAP_ID_PREFIX')
 PAP_MESSAGE_TIMEZONE_NAME = env('PAP_MESSAGE_TIMEZONE_NAME')
+PAP_VERBOSE = env('PAP_VERBOSE')
 
 # we currently have only one active logistics center and it is set here so that
 # we know which one to use when sending out orders and purchase orders. in the

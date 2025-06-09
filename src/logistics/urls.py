@@ -24,4 +24,9 @@ urlpatterns = [
         views.ProviderWebhookView.as_view(),
         name='provider-webhook',
     ),
+    path(
+        'purchase-order-product/<int:pk>',
+        views.PurchaseOrderProductView.as_view(),
+        name='purchase-order-product',
+    ),
 ]

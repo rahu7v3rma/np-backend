@@ -158,31 +158,31 @@ def send_export_download_email(
     return res
 
 
-def send_purchase_order_email(purchase_order: PurchaseOrder):
-    subject = f'Purchase Order #{purchase_order.id}'
-    email = purchase_order.supplier.email
-    product_name = purchase_order.products.all().values_list(
-        'product_id__name', flat=True
-    )
-    product_sku = purchase_order.products.all().values_list(
-        'product_id__sku', flat=True
-    )
-    quantity_order = purchase_order.products.all().values_list(
-        'quantity_ordered', flat=True
-    )
+def send_purchase_order_email(
+    purchase_order: PurchaseOrder,
+    attached_excel: Union[Optional[dict]],
+    language_code: str,
+):
     context = {
-        'po': purchase_order,
-        'product_name': product_name,
-        'product_sku': product_sku,
-        'quantity_order': quantity_order,
+        'order': purchase_order,
+        'purchase_order_products': purchase_order.products.all(),
     }
 
     res = send_mail(
-        [email],
-        subject,
+        send_to=[purchase_order.supplier.email],
+        cc_emails=settings.CC_RECIPIENT_EMAILS,
+        reply_to=settings.REPLY_TO_ADDRESSES_EMAILS,
+        subject=(
+            f'פרטי הזמנת רכישה - #{purchase_order.po_number}'
+            if language_code == 'he'
+            else f'Purchase Order Details - #{purchase_order.po_number}'
+        ),
+        plaintext_email_template=f'emails/purchase_order_{language_code}.txt',
+        html_email_template=f'emails/purchase_order_{language_code}.html',
         context=context,
-        plaintext_email_template='emails/purchase_order.txt',
-        html_email_template='emails/purchase_order.html',
+        attachments=[
+            attached_excel,
+        ],
     )
     return res
 

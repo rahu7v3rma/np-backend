@@ -800,10 +800,15 @@ class SendPurchaseOrderToLogisticsCenterTestCase(TestCase):
             quantity_sent_to_logistics_center=0,
         )
 
-    @patch('logistics.tasks.send_purchase_order_to_logistics_center', return_value=True)
-    def test_task_triggered_on_purchase_order_approve(self, mock_send_task):
+    @override_settings(ORIAN_MESSAGE_TIMEZONE_NAME='UTC')
+    @patch('logistics.tasks.orian_add_or_update_supplier', return_value=True)
+    @patch('logistics.tasks.orian_add_or_update_product', return_value=True)
+    @patch('logistics.tasks.orian_add_or_update_inbound', return_value=True)
+    def test_task_triggered_on_purchase_order_approve(
+        self, mock_update_inbound, _mock_send_product_task, _mock_send_supplier_task
+    ):
         # mock is not called to begin with
-        self.assertEquals(mock_send_task.apply_async.call_count, 0)
+        self.assertEquals(mock_update_inbound.call_count, 0)
 
         # we can take an existing purchase order and change its status to
         # anything but approved, or create a new purchase order with any status
@@ -829,25 +834,27 @@ class SendPurchaseOrderToLogisticsCenterTestCase(TestCase):
         )
 
         # mock was not yet called
-        self.assertEquals(mock_send_task.apply_async.call_count, 0)
+        self.assertEquals(mock_update_inbound.call_count, 0)
 
         # update an existing purchase order's status to approved and the task
         # should be invoked
         self.purchase_order_1.approve()
 
         # mock was called
-        self.assertEquals(mock_send_task.apply_async.call_count, 1)
+        self.assertEquals(mock_update_inbound.call_count, 1)
         self.assertEquals(
-            mock_send_task.apply_async.call_args[0],
-            ((self.purchase_order_1.pk, LogisticsCenterEnum.ORIAN),),
+            mock_update_inbound.call_args[0][0],
+            self.purchase_order_1,
         )
+
+        self.purchase_order_1.refresh_from_db()
 
         # approving a purchase order again should raise a validation error
         with self.assertRaises(ValidationError):
             self.purchase_order_1.approve()
 
         # mock was not called again
-        self.assertEquals(mock_send_task.apply_async.call_count, 1)
+        self.assertEquals(mock_update_inbound.call_count, 1)
 
     @responses.activate
     @override_settings(ORIAN_MESSAGE_TIMEZONE_NAME='UTC')

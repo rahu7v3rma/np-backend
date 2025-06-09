@@ -121,7 +121,7 @@ class ProductGetSerializer(Serializer):
     brand_id = IntegerField(required=False)
     supplier_id = IntegerField(required=False)
     category_id = IntegerField(required=False)
-    tag_id = IntegerField(required=False)
+    tag_ids = ListField(child=IntegerField(), required=False)
     campaign_id = IntegerField(required=False)
     employee_group_id = IntegerField(required=False)
     quick_offer_id = IntegerField(required=False)

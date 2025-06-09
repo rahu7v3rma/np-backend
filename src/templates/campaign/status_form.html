@@ -71,6 +71,7 @@
         }
     }
 </script>
+<script src="https://unpkg.com/axios/dist/axios.min.js"></script>
 {{ media }}
 {% endblock %}
 
@@ -237,6 +238,7 @@
                     </div>
                 </div>
                 <button class="button" style="padding: 6px; cursor: pointer;margin-top:10px;" onclick="{
+                    const campaignId = '{{ object_id }}';
                     const sendInvitationType = [];
                     const selectedCampaignEmployees = Array.from(
                         document.querySelectorAll(
@@ -256,13 +258,35 @@
                         sendInvitationType.push('sms');
                     }
                     if(sendInvitationType.length){
-                        const currentHref = window.location.href;
-                        const [baseUrl, queryString] = currentHref.split('?');
-                        const searchParams = new URLSearchParams(queryString || '');
-                        searchParams.set('sendInvitationType', sendInvitationType.join(','));
-                        searchParams.set('campaignEmployees', selectedCampaignEmployees.join(','));
-                        const newUrl = `${baseUrl}?${searchParams.toString()}`;
-                        window.open(newUrl, '_self');
+                        const csrftoken = document.querySelector('[name=csrfmiddlewaretoken]')?.value || '';
+                        let requestCampaignEmployees = selectedCampaignEmployees.reduce((a,v)=>{
+                            if(a[a.length-1].length>=500){
+                                a.push([v]);
+                            } else {
+                                a[a.length-1].push(v);
+                            }
+                            return a;
+                        },[[]])
+                        alert('Invitation sending process has started')
+                        requestCampaignEmployees.forEach((campaignEmployees)=>{
+                            axios.post(
+                                '/campaign/campaign-employee-send-invitation',
+                                {
+                                    campaign_id: campaignId,
+                                    send_invitation_type: sendInvitationType,
+                                    campaign_employees: campaignEmployees
+                                },
+                                {
+                                    headers: {
+                                        'X-CSRFToken': csrftoken,
+                                        'Content-Type': 'application/json',
+                                    },
+                                    withCredentials: true,
+                                }
+                            ).catch((error)=>{
+                                alert('Something went wrong while sending invitations')
+                            })
+                        })
                     }
                 }">Send Invitations</button>
             </div>

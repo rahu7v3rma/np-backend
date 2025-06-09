@@ -1,7 +1,15 @@
 from django.urls import path
 
 from . import views
-from .admin_views import CampaignEmployeeAutocompleteView, update_employee_budget
+from .admin_views import (
+    CampaignEmployeeAutocompleteView,
+    EmployeeGroupAutocompleteView,
+    EmployeeGroupCampaignProductAutocompleteView,
+    OrganizationAutocompleteView,
+    PurchaseOrderProductAutocomplete,
+    QuickOfferAutocompleteView,
+    update_employee_budget,
+)
 
 
 urlpatterns = [
@@ -174,5 +182,40 @@ urlpatterns = [
         'update-employee-budget/<int:employee_id>/',
         update_employee_budget,
         name='update_employee_budget',
+    ),
+    path(
+        'campaign-employee-send-invitation',
+        views.CampaignEmployeeSendInvitationView.as_view(),
+        name='campaign-employee-send-invitation',
+    ),
+    path(
+        'admin/campaign/orderproduct/purchase-order-product-autocomplete/',
+        PurchaseOrderProductAutocomplete.as_view(),
+        name='purchase-order-product-autocomplete',
+    ),
+    path(
+        'organization-autocomplete/',
+        OrganizationAutocompleteView.as_view(),
+        name='organization-autocomplete',
+    ),
+    path(
+        'employee-group-campaign-product-autocomplete',
+        EmployeeGroupCampaignProductAutocompleteView.as_view(),
+        name='employee-group-campaign-product-autocomplete',
+    ),
+    path(
+        'employee-group-autocomplete',
+        EmployeeGroupAutocompleteView.as_view(),
+        name='employee-group-autocomplete',
+    ),
+    path(
+        'quick-offer-autocomplete',
+        QuickOfferAutocompleteView.as_view(),
+        name='quick-offer-autocomplete',
+    ),
+    path(
+        'employee-group-campaign-product',
+        views.EmployeeGroupCampaignProductView.as_view(),
+        name='employee-group-campaign-product',
     ),
 ]

@@ -34,7 +34,11 @@ def active_campaigns(obj):
         product_id=obj
     ).values_list('employee_group_campaign_id__campaign', flat=True)
     campaigns = Campaign.objects.filter(
-        id__in=campaign_ids, status=Campaign.CampaignStatusEnum.ACTIVE.name
+        id__in=campaign_ids,
+        status__in=[
+            Campaign.CampaignStatusEnum.ACTIVE.name,
+            Campaign.CampaignStatusEnum.PREVIEW.name,
+        ],
     ).values_list('name', flat=True)
     active_campaign_str = ', '.join(campaigns)
     return active_campaign_str

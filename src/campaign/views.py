@@ -43,12 +43,14 @@ from campaign.models import (
     QuickOfferSelectedProduct,
 )
 from campaign.serializers import (
+    CampaignEmployeeSendInvitationPostSerializer,
     CampaignExchangeRequestSerializer,
     CampaignExtendedSerializer,
     CampaignProductsGetSerializer,
     CampaignSerializer,
     CartAddProductSerializer,
     CartSerializer,
+    EmployeeGroupCampaignProductPutSerializer,
     EmployeeGroupSerializer,
     EmployeeLoginSerializer,
     EmployeeOrderRequestSerializer,
@@ -74,6 +76,7 @@ from campaign.serializers import (
     QuickOfferUpdateSendMyOrderSerializer,
     ShareRequestSerializer,
 )
+from campaign.tasks import send_campaign_employee_invitation
 from campaign.utils import (
     AdminPreviewAuthentication,
     EmployeeAuthentication,
@@ -279,7 +282,10 @@ class CampaignCategoriesView(APIView):
 
         if not get_employee_admin_preview(request.user):
             employee_group_campaign_query = employee_group_campaign_query.filter(
-                campaign__status=Campaign.CampaignStatusEnum.ACTIVE.name
+                campaign__status__in=[
+                    Campaign.CampaignStatusEnum.ACTIVE.name,
+                    Campaign.CampaignStatusEnum.PREVIEW.name,
+                ]
             )
 
         employee_group_campaign = employee_group_campaign_query.first()
@@ -355,7 +361,10 @@ class ProductView(APIView):
 
         if not get_employee_admin_preview(request.user):
             employee_product_query = employee_product_query.filter(
-                employee_group_campaign_id__campaign__status=Campaign.CampaignStatusEnum.ACTIVE.name
+                employee_group_campaign_id__campaign__status__in=[
+                    Campaign.CampaignStatusEnum.ACTIVE.name,
+                    Campaign.CampaignStatusEnum.PREVIEW.name,
+                ]
             )
 
         employee_product = employee_product_query.first()
@@ -406,7 +415,11 @@ class ShareProductView(APIView):
         product_ids = serializer.data.get('product_ids')
         share_type = serializer.data.get('share_type')
         campaign = Campaign.objects.filter(
-            code=campaign_code, status=Campaign.CampaignStatusEnum.ACTIVE.name
+            code=campaign_code,
+            status__in=[
+                Campaign.CampaignStatusEnum.ACTIVE.name,
+                Campaign.CampaignStatusEnum.PREVIEW.name,
+            ],
         ).first()
         if not campaign:
             return Response(
@@ -460,7 +473,11 @@ class ShareProductView(APIView):
         # Handle Cart share type
         if share_type == ShareTypeEnum.Cart.value:
             campaign = Campaign.objects.filter(
-                code=campaign_code, status=Campaign.CampaignStatusEnum.ACTIVE.name
+                code=campaign_code,
+                status__in=[
+                    Campaign.CampaignStatusEnum.ACTIVE.name,
+                    Campaign.CampaignStatusEnum.PREVIEW.name,
+                ],
             ).first()
             if not campaign:
                 return Response(
@@ -513,7 +530,10 @@ class ShareProductView(APIView):
 
         if not get_employee_admin_preview(employee):
             employee_product_query = employee_product_query.filter(
-                employee_group_campaign_id__campaign__status=Campaign.CampaignStatusEnum.ACTIVE.name
+                employee_group_campaign_id__campaign__status__in=[
+                    Campaign.CampaignStatusEnum.ACTIVE.name,
+                    Campaign.CampaignStatusEnum.PREVIEW.name,
+                ]
             )
 
         employee_products = employee_product_query.all()
@@ -591,7 +611,10 @@ class GetShareDetailsView(APIView):
 
             if not get_employee_admin_preview(request.user):
                 employee_product_query = employee_product_query.filter(
-                    employee_group_campaign_id__campaign__status=Campaign.CampaignStatusEnum.ACTIVE.name
+                    employee_group_campaign_id__campaign__status__in=[
+                        Campaign.CampaignStatusEnum.ACTIVE.name,
+                        Campaign.CampaignStatusEnum.PREVIEW.name,
+                    ]
                 )
 
             for employee_product in employee_product_query:
@@ -625,7 +648,11 @@ class GetShareDetailsView(APIView):
                 )
 
                 campaign = Campaign.objects.filter(
-                    code=campaign_code, status=Campaign.CampaignStatusEnum.ACTIVE.name
+                    code=campaign_code,
+                    status__in=[
+                        Campaign.CampaignStatusEnum.ACTIVE.name,
+                        Campaign.CampaignStatusEnum.PREVIEW.name,
+                    ],
                 ).first()
                 if not campaign:
                     return Response(
@@ -748,7 +775,10 @@ class CampaignProductsView(APIView):
 
         if not get_employee_admin_preview(request.user):
             campaign_query = campaign_query.filter(
-                status=Campaign.CampaignStatusEnum.ACTIVE.name
+                status__in=[
+                    Campaign.CampaignStatusEnum.ACTIVE.name,
+                    Campaign.CampaignStatusEnum.PREVIEW.name,
+                ]
             )
 
         campaign = campaign_query.first()
@@ -915,6 +945,31 @@ class EmployeeLoginView(APIView):
 
             otp = request.pop('otp', None)
 
+            if 'email' in request:
+                request['email'] = request['email'].lower()
+
+            # Step 1: Build the identifier (email, phone_number or auth_id)
+            identifier = {}
+            if 'email' in request:
+                identifier['email'] = request['email']
+            elif 'phone_number' in request:
+                identifier['phone_number'] = request['phone_number']
+            elif 'auth_id' in request:
+                identifier['auth_id'] = request['auth_id']
+
+            # Step 2: Check if user is registered in the system at all
+            if not Employee.objects.filter(**identifier).exists():
+                return Response(
+                    {
+                        'success': False,
+                        'message': 'The details you entered are incorrect, check the details and re-enter',  # noqa: E501
+                        'code': 'user_not_registered',
+                        'status': status.HTTP_401_UNAUTHORIZED,
+                        'data': {},
+                    },
+                    status=status.HTTP_401_UNAUTHORIZED,
+                )
+
             # Convert email to lowercase before comparing
             if 'email' in request:
                 request['email'] = request['email'].lower()
@@ -953,6 +1008,7 @@ class EmployeeLoginView(APIView):
                 'EMAIL': 'email',
                 'SMS': 'phone_number',
                 'AUTH_ID': 'auth_id',
+                'VOUCHER_CODE': 'auth_id',
             }
             if not (
                 (employee.login_type in egc_auth_map.keys())
@@ -1076,7 +1132,10 @@ class OrderDetailsView(APIView):
         campaign_employee = CampaignEmployee.objects.filter(
             employee=request.user,
             campaign__code=campaign_code,
-            campaign__status=Campaign.CampaignStatusEnum.ACTIVE.name,
+            campaign__status__in=[
+                Campaign.CampaignStatusEnum.ACTIVE.name,
+                Campaign.CampaignStatusEnum.PREVIEW.name,
+            ],
         ).first()
 
         if campaign_employee:
@@ -1124,7 +1183,10 @@ class CancelOrderView(APIView):
         order = Order.objects.filter(
             pk=order_id,
             campaign_employee_id__campaign__code=campaign_code,
-            campaign_employee_id__campaign__status=Campaign.CampaignStatusEnum.ACTIVE.name,
+            campaign_employee_id__campaign__status__in=[
+                Campaign.CampaignStatusEnum.ACTIVE.name,
+                Campaign.CampaignStatusEnum.PREVIEW.name,
+            ],
             campaign_employee_id__employee=request.user,
         ).first()
 
@@ -1151,6 +1213,17 @@ class CancelOrderView(APIView):
                 },
                 status=status.HTTP_402_PAYMENT_REQUIRED,
             )
+        elif order.status == Order.OrderStatusEnum.CANCELLED.name:
+            return Response(
+                {
+                    'success': False,
+                    'message': 'Order is already cancelled.',
+                    'code': 'order_already_cancelled',
+                    'status': status.HTTP_400_BAD_REQUEST,
+                    'data': {},
+                },
+                status=status.HTTP_400_BAD_REQUEST,
+            )
 
         # cancel the order
         order.status = Order.OrderStatusEnum.CANCELLED.name
@@ -1161,7 +1234,10 @@ class CancelOrderView(APIView):
             ),
             cart_id__campaign_employee_id__employee=request.user,
             cart_id__campaign_employee_id__campaign__code=campaign_code,
-            cart_id__campaign_employee_id__campaign__status=Campaign.CampaignStatusEnum.ACTIVE.name,
+            cart_id__campaign_employee_id__campaign__status__in=[
+                Campaign.CampaignStatusEnum.ACTIVE.name,
+                Campaign.CampaignStatusEnum.PREVIEW.name,
+            ],
         ).delete()
 
         return Response(
@@ -1209,7 +1285,10 @@ class EmployeeOrderView(APIView):
         campaign = Campaign.objects.filter(
             code=campaign_code,
             employees=employee,
-            status=Campaign.CampaignStatusEnum.ACTIVE.name,
+            status__in=[
+                Campaign.CampaignStatusEnum.ACTIVE.name,
+                Campaign.CampaignStatusEnum.PREVIEW.name,
+            ],
         ).first()
         employee_group_campaign = None
         if campaign:
@@ -1300,8 +1379,10 @@ class EmployeeOrderView(APIView):
 
         # check if all the products are available
         for cart_product in cart_products:
-            remaining_quantity = cart_product.product_id.product_id.remaining_quantity
-            if remaining_quantity < cart_product.quantity:
+            product_quantity = cart_product.product_id.product_id.product_quantity
+            if product_quantity < cart_product.quantity:
+                cart_product.quantity = product_quantity
+                cart_product.save(update_fields=['quantity'])
                 return Response(
                     {
                         'success': False,
@@ -1311,7 +1392,7 @@ class EmployeeOrderView(APIView):
                                 'The remaining quantity is %(remaining_quantity)d.'
                             )
                         )
-                        % {'remaining_quantity': remaining_quantity},
+                        % {'remaining_quantity': product_quantity},
                         'code': 'request_invalid',
                         'status': status.HTTP_400_BAD_REQUEST,
                         'data': request_data.errors,
@@ -1410,11 +1491,15 @@ class EmployeeOrderView(APIView):
                 lang = request.GET.get('lang', 'en')
                 if variations and lang == 'he':
                     variations = transform_variations(variations, mode='request')
+                voucher_val = self.calculate_voucher_val(
+                    employee_group_campaign_product
+                )
                 OrderProduct.objects.create(
                     order_id=employee_order,
                     product_id=employee_group_campaign_product,
                     quantity=quantity,
                     variations=variations,
+                    voucher_val=voucher_val,
                 )
 
         total_budget = (
@@ -1443,7 +1528,28 @@ class EmployeeOrderView(APIView):
             left_budget if amount_to_be_payed > 0 else order_price
         )
         employee_order.cost_added = amount_to_be_payed if amount_to_be_payed > 0 else 0
-        employee_order.save(update_fields=['cost_from_budget', 'cost_added'])
+
+        details = []
+        details.append(f'Order ID: {employee_order.reference}')
+        details.append(f'Order Date: {employee_order.order_date_time}')
+        details.append(f'Employee Name: {employee_order.full_name}')
+        details.append('Products:')
+        for cart_product in cart_products:
+            product = cart_product.product_id.product_id
+            details.append(
+                f' - {product.name}'
+                f' (SKU: {product.sku})'
+                f' X Quantity: {cart_product.quantity}'
+            )
+        details.append(f'Cost Added: {employee_order.cost_added}')
+        details.append(f'Cost from Budget: {employee_order.cost_from_budget}')
+        details.append(
+            f'Total cost: {employee_order.cost_added + employee_order.cost_from_budget}'
+        )
+        employee_order.raw_details = '\n'.join(details)
+        employee_order.save(
+            update_fields=['cost_from_budget', 'cost_added', 'raw_details']
+        )
 
         if amount_to_be_payed > 0:
             payer_full_name = request_order_data.get('full_name', None)
@@ -1483,6 +1589,16 @@ class EmployeeOrderView(APIView):
             employee_order.status = employee_order.OrderStatusEnum.PENDING.name
             employee_order.save(update_fields=['status'])
 
+            # Decrease the actual product quantity
+            if employee_order.status in [
+                employee_order.OrderStatusEnum.PENDING.name,
+                employee_order.OrderStatusEnum.SENT_TO_LOGISTIC_CENTER.name,
+            ]:
+                for cart_product in cart_products:
+                    product = cart_product.product_id.product_id
+                    product.product_quantity -= cart_product.quantity
+                    product.save(update_fields=['product_quantity'])
+
             if campaign.campaign_type == 'WALLET':
                 cart_products.delete()
 
@@ -1497,6 +1613,16 @@ class EmployeeOrderView(APIView):
             },
             status=status.HTTP_200_OK,
         )
+
+    def calculate_voucher_val(self, egc_product: EmployeeGroupCampaignProduct):
+        budget = egc_product.employee_group_campaign_id.budget_per_employee
+        if budget is None or egc_product.product_id.product_kind != 'MONEY':
+            return None
+
+        if egc_product.discount_mode == 'EMPLOYEE':
+            discount_rate = egc_product.organization_discount_rate or 0
+            return round(budget / (1 - (discount_rate / 100)), 1)
+        return round(budget, 1)
 
 
 class GetCampaignView(APIView):
@@ -1596,7 +1722,10 @@ class CartAddProductView(APIView):
 
     def post(self, request, campaign_code):
         request_serializer = CartAddProductSerializer(data=request.data)
-        if not request_serializer.is_valid():
+        if not request_serializer.is_valid() and not (
+            'quantity' in request_serializer.errors
+            and len(request_serializer.errors) == 1
+        ):
             return Response(
                 {
                     'success': False,
@@ -1607,11 +1736,26 @@ class CartAddProductView(APIView):
                 },
                 status=status.HTTP_400_BAD_REQUEST,
             )
-        product_id = request_serializer.validated_data.get('product_id')
-        quantity = request_serializer.validated_data.get('quantity')
-        variations = request_serializer.validated_data.get('variations')
+
+        if (
+            'quantity' in request_serializer.errors
+            and len(request_serializer.errors) == 1
+        ):
+            product_id = request.data.get('product_id')
+            product = Product.objects.filter(id=product_id).first()
+            quantity = product.product_quantity
+            variations = request.data.get('variations')
+        else:
+            product_id = request_serializer.validated_data.get('product_id')
+            quantity = request_serializer.validated_data.get('quantity')
+            variations = request_serializer.validated_data.get('variations')
+
         campaign = Campaign.objects.filter(
-            code=campaign_code, status=Campaign.CampaignStatusEnum.ACTIVE.name
+            code=campaign_code,
+            status__in=[
+                Campaign.CampaignStatusEnum.ACTIVE.name,
+                Campaign.CampaignStatusEnum.PREVIEW.name,
+            ],
         ).first()
 
         employee = request.user
@@ -1648,6 +1792,21 @@ class CartAddProductView(APIView):
             request.GET.get('lang', 'en'),
             variations,
         )
+
+        if (
+            'quantity' in request_serializer.errors
+            and len(request_serializer.errors) == 1
+        ):
+            return Response(
+                {
+                    'success': False,
+                    'message': 'Request is invalid.',
+                    'code': 'request_invalid',
+                    'status': status.HTTP_400_BAD_REQUEST,
+                    'data': request_serializer.errors,
+                },
+                status=status.HTTP_400_BAD_REQUEST,
+            )
 
         return Response(
             {
@@ -1755,7 +1914,11 @@ class GetCartProductsView(APIView):
     @method_decorator(lang_decorator)
     def get(self, request, campaign_code):
         campaign = Campaign.objects.filter(
-            code=campaign_code, status=Campaign.CampaignStatusEnum.ACTIVE.name
+            code=campaign_code,
+            status__in=[
+                Campaign.CampaignStatusEnum.ACTIVE.name,
+                Campaign.CampaignStatusEnum.PREVIEW.name,
+            ],
         ).first()
 
         employee = request.user
@@ -1837,7 +2000,10 @@ class FilterLookupView(APIView):
 
             if not get_employee_admin_preview(request.user):
                 employee_group_campaign_query = employee_group_campaign_query.filter(
-                    campaign__status=Campaign.CampaignStatusEnum.ACTIVE.name
+                    campaign__status__in=[
+                        Campaign.CampaignStatusEnum.ACTIVE.name,
+                        Campaign.CampaignStatusEnum.PREVIEW.name,
+                    ]
                 )
 
             employee_group_campaign = employee_group_campaign_query.first()
@@ -2862,6 +3028,108 @@ class OrganizationProductView(APIView):
                 'message': 'Organization product updated successfully.',
                 'status': status.HTTP_200_OK,
                 'data': response_serializer.data,
+            },
+            status=status.HTTP_200_OK,
+        )
+
+
+class CampaignEmployeeSendInvitationView(APIView):
+    authentication_classes = [SessionAuthentication]
+
+    def post(self, request):
+        request_serializer = CampaignEmployeeSendInvitationPostSerializer(
+            data=request.data
+        )
+        if not request_serializer.is_valid():
+            return Response(
+                {
+                    'success': False,
+                    'message': 'Request is invalid.',
+                    'code': 'request_invalid',
+                    'status': status.HTTP_400_BAD_REQUEST,
+                    'data': request_serializer.errors,
+                },
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        request_data = request_serializer.validated_data
+        campaign_employees = request_data.get('campaign_employees')
+        send_invitation_type = request_data.get('send_invitation_type')
+        campaign_id = request_data.get('campaign_id')
+
+        if send_invitation_type and campaign_employees:
+            send_invitation_employees = list(
+                CampaignEmployee.objects.filter(id__in=campaign_employees).values_list(
+                    'employee__id', flat=True
+                )
+            )
+            if send_invitation_employees:
+                send_campaign_employee_invitation.apply_async(
+                    (campaign_id, send_invitation_employees, send_invitation_type)
+                )
+
+        return Response(
+            {
+                'success': True,
+                'message': 'Invitation sending process has started',
+                'status': status.HTTP_200_OK,
+                'data': {},
+            },
+            status=status.HTTP_200_OK,
+        )
+
+
+class EmployeeGroupCampaignProductView(APIView):
+    authentication_classes = [SessionAuthentication]
+
+    def put(self, request):
+        request_serializer = EmployeeGroupCampaignProductPutSerializer(
+            data=request.data
+        )
+        if not request_serializer.is_valid():
+            return Response(
+                {
+                    'success': False,
+                    'message': 'Request is invalid.',
+                    'code': 'request_invalid',
+                    'status': status.HTTP_400_BAD_REQUEST,
+                    'data': request_serializer.errors,
+                },
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        request_data = request_serializer.validated_data
+        product_id = request_data.get('product_id')
+        company_cost_per_employee = request_data.get('company_cost_per_employee')
+
+        employee_group_campaign_product = EmployeeGroupCampaignProduct.objects.filter(
+            product_id=product_id
+        ).first()
+        if not employee_group_campaign_product:
+            return Response(
+                {
+                    'success': False,
+                    'message': 'Employee group campaign product not found.',
+                    'code': 'not_found',
+                    'status': status.HTTP_404_NOT_FOUND,
+                    'data': {},
+                },
+                status=status.HTTP_404_NOT_FOUND,
+            )
+
+        if company_cost_per_employee:
+            employee_group_campaign_product.company_cost_per_employee = (
+                company_cost_per_employee
+            )
+
+        employee_group_campaign_product.save()
+
+        return Response(
+            {
+                'success': True,
+                'message': 'Employee group campaign product updated successfully.',
+                'status': status.HTTP_200_OK,
+                'data': {},
             },
             status=status.HTTP_200_OK,
         )

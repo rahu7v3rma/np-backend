@@ -35,6 +35,7 @@ const SelectProducts: FunctionComponent = () => {
         employee_group: {
           name: string;
           budget: number;
+          company_cost: number;
           employee_group_id: number;
           default_discount: string;
         },
@@ -45,6 +46,7 @@ const SelectProducts: FunctionComponent = () => {
         idx: index,
         key: index,
         budget: employee_group.budget,
+        company_cost: employee_group.company_cost,
         default_discount: employee_group.default_discount,
       }),
     );

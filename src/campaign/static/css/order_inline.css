@@ -1,0 +1,26 @@
+.inline-btn {
+    position: absolute;
+    left: 0;
+    top: 30px;
+    background: none;
+    border: none;
+    color: #999;
+    font-size: 1.5rem;
+    cursor: pointer;
+    padding: 0 8px;
+    transition: color 0.2s;
+}
+
+.inline-btn:hover {
+    color: #ff0000;
+    background: #f5f5f5;
+    border-radius: 50%;
+}
+
+.dynamic-orderproduct_set {
+    position: relative;
+}
+
+.field-purchase_order_product {
+    padding-left: 40px;
+}

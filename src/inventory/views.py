@@ -17,6 +17,7 @@ from rest_framework.views import APIView
 
 from campaign.models import (
     EmployeeGroupCampaign,
+    EmployeeGroupCampaignProduct,
     OrganizationProduct,
     QuickOffer,
 )
@@ -67,7 +68,7 @@ class ProductView(APIView):
         request_brand_id = request_serializer.validated_data.get('brand_id', None)
         request_supplier_id = request_serializer.validated_data.get('supplier_id', None)
         request_category_id = request_serializer.validated_data.get('category_id', None)
-        request_tag_id = request_serializer.validated_data.get('tag_id', None)
+        request_tag_ids = request_serializer.validated_data.get('tag_ids', None)
         request_employee_group_id = request_serializer.validated_data.get(
             'employee_group_id', None
         )
@@ -125,8 +126,8 @@ class ProductView(APIView):
             products = products.filter(supplier_id=request_supplier_id)
         if request_category_id:
             products = products.filter(categories__id=request_category_id)
-        if request_tag_id:
-            products = products.filter(tags__id=request_tag_id)
+        if request_tag_ids:
+            products = products.filter(tags__id__in=request_tag_ids)
         if request_product_kind:
             products = products.filter(product_kind=request_product_kind)
         if request_employee_group_id:
@@ -222,19 +223,80 @@ class SupplierProductsView(APIView):
                 },
                 status=status.HTTP_404_NOT_FOUND,
             )
-        serializer = ProductSerializer(
-            supplier.supplier_products.annotate(
-                tax_percent=Value(settings.TAX_PERCENT)
-            ).all(),
-            many=True,
-        )
+        # Get all products for the supplier
+        products = supplier.supplier_products.annotate(
+            tax_percent=Value(settings.TAX_PERCENT)
+        ).all()
 
+        # Create a list to store products with voucher values
+        products_with_voucher = []
+        # Iterate through each product
+        for product in products:
+            # Get the base product data
+            serializer = ProductSerializer(product)
+            product_data = serializer.data
+
+            # Only process products with type 'MONEY'
+            if product.product_kind == 'MONEY':
+                # Calculate voucher_value for the product
+                # Check if the product is associated with any
+                # EmployeeGroupCampaignProduct
+                campaign_products = EmployeeGroupCampaignProduct.objects.filter(
+                    product_id=product.id
+                )
+
+                for campaign_product in campaign_products:
+                    # Create a copy of the product data
+                    # Use the serializer to convert the product to a dictionary
+                    product_with_voucher = product_data.copy()
+                    # Calculate voucher value based on campaign settings
+                    voucher_value = 0
+                    if (
+                        campaign_product.employee_group_campaign_id
+                        and (
+                            campaign_product.employee_group_campaign_id
+                        ).budget_per_employee
+                    ):
+                        if campaign_product.discount_mode == 'EMPLOYEE':
+                            voucher_value = (
+                                campaign_product.employee_group_campaign_id.budget_per_employee
+                                / (
+                                    1
+                                    - (
+                                        (
+                                            campaign_product.organization_discount_rate
+                                            or 0
+                                        )
+                                        / 100
+                                    )
+                                )
+                            )
+                        else:
+                            voucher_value = (
+                                campaign_product.employee_group_campaign_id
+                            ).budget_per_employee
+
+                    # Add voucher_value to the product data
+                    product_with_voucher['voucher_value'] = str(
+                        round(float(voucher_value), 2)
+                    )
+
+                    # Add the product with voucher value to the list
+                    products_with_voucher.append(product_with_voucher)
+            else:
+                # For non-MONEY products, just add them as is
+                products_with_voucher.append(product_data)
+
+        # If no products with voucher values were found, use the original products
+        if not products_with_voucher:
+            serializer = ProductSerializer(products, many=True)
+            products_with_voucher = serializer.data
         return Response(
             {
                 'success': True,
                 'message': 'Products fetched successfully.',
                 'status': status.HTTP_200_OK,
-                'data': serializer.data,
+                'data': products_with_voucher,
             },
             status=status.HTTP_200_OK,
         )

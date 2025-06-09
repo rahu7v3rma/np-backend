@@ -2,22 +2,19 @@ from datetime import datetime, timezone
 from io import BytesIO
 import logging
 import os
-from typing import List, Literal
+from typing import Literal
 import uuid
 
 from celery import shared_task
-from django.conf import settings
 from django.core.files.base import ContentFile
 from django.core.files.storage import storages
 from django.db.models.sql.query import Query
 from openpyxl import Workbook
 
 from inventory.utils import fill_message_template_email, fill_message_template_sms
-from logistics.models import PurchaseOrder
 from services.email import (
     send_campaign_welcome_email,
     send_export_download_email,
-    send_mail,
 )
 from services.sms import send_campaign_welcome_sms
 
@@ -200,6 +197,7 @@ def export_orders_as_xlsx(
         'organization price',
         'status',
         'DC status',
+        'Last Status Change',
     ]
 
     workbook = Workbook()
@@ -291,6 +289,7 @@ def export_orders_as_xlsx(
             )
             record.append(order_serializer.get('status'))
             record.append(order_serializer.get('logistics_center_status'))
+            record.append(order_serializer.get('dc_status_last_changed'))
 
             worksheet.append(record)
 
@@ -322,91 +321,6 @@ def export_orders_as_xlsx(
     )
 
     return True
-
-
-def snake_to_title(snake_str_list: List[str]) -> List[str]:
-    title_str_list = []
-    for snake_str in snake_str_list:
-        words = snake_str.split('_')
-        title_words = [word.capitalize() for word in words]
-        title_str = ' '.join(title_words)
-        title_str_list.append(title_str)
-    return title_str_list
-
-
-@shared_task
-def send_purchase_order_email(order_id: int, language_code='en') -> bool:
-    order: PurchaseOrder = PurchaseOrder.objects.filter(id=order_id).first()
-    products = order.products.all()
-    products_data = []
-    sub_total = 0
-    for _product in products:
-        _category = _product.product_id.categories.all().first()
-        _category = _category.name if _category else ''
-        _brand = _product.product_id.brand.name
-        cost_price = round(
-            _product.product_id.cost_price * (1 - settings.TAX_PERCENT / 100), 2
-        )
-        total_price = cost_price * _product.quantity_ordered
-        products_data.append(
-            {
-                'id': _product.product_id.id,
-                'main': _product.product_id.main_image_link,
-                'name': _product.product_id.name,
-                'category': _category,
-                'brand': _brand,
-                'quantity': _product.quantity_ordered,
-                'quantity_received': 0,
-                'sku': _product.product_id.sku,
-                'barcode': _product.product_id.reference,
-                'cost_price': cost_price,
-                'status': order.status,
-                'supplier': _product.product_id.supplier.name,
-                'total_price': total_price,
-            }
-        )
-
-        sub_total += total_price
-
-    column_headers = snake_to_title(list(products_data[0].keys()))
-
-    workbook = Workbook()
-    xlsx = workbook.active
-    xlsx.append(column_headers)
-
-    for product_idx, _product in enumerate(products_data):
-        row = list(_product.values())
-        xlsx.append(row)
-
-    xlsx.append([])
-    xlsx.append(['Description', 'Total Price'])
-    xlsx.append([order.notes, sub_total])
-
-    output = BytesIO()
-    workbook.save(output)
-    output.seek(0)
-
-    attachment = {
-        'filename': f'Order_Products_{order.id}.xlsx',
-        'content': output.getvalue(),
-        'mimetype': 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
-    }
-    return send_mail(
-        send_to=[order.supplier.email],
-        cc_emails=settings.CC_RECIPIENT_EMAILS,
-        reply_to=settings.REPLY_TO_ADDRESSES_EMAILS,
-        subject=(
-            f'פרטי הזמנת רכישה - #{order.po_number}'
-            if language_code == 'he'
-            else f'Purchase Order Details - #{order.po_number}'
-        ),
-        plaintext_email_template=f'emails/purchase_order_{language_code}.txt',
-        html_email_template=f'emails/purchase_order_{language_code}.html',
-        context={'order': order, 'purchase_order_products': order.products.all()},
-        attachments=[
-            attachment,
-        ],
-    )
 
 
 @shared_task

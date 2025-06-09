@@ -13,6 +13,7 @@ interface Tab {
   key: number;
   idx: number;
   budget: number;
+  company_cost: number;
   default_discount: string;
 }
 
@@ -56,6 +57,7 @@ const Tab = ({ tabs, organizationId }: Props) => {
             formId={tab.idx}
             organizationId={organizationId}
             budget={tab.budget}
+            company_cost={tab.company_cost}
             default_discount={tab.default_discount}
             allTabs={tabs}
           />

@@ -2,12 +2,13 @@ import json
 import logging
 
 from rest_framework import status
+from rest_framework.authentication import SessionAuthentication
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
 from .authentication import IsCorrectProvider, ProviderAuthentication
 from .enums import LogisticsCenterEnum, LogisticsCenterMessageTypeEnum
-from .models import LogisticsCenterMessage
+from .models import LogisticsCenterMessage, PurchaseOrderProduct
 from .tasks import process_logistics_center_message
 
 
@@ -84,6 +85,38 @@ class ProviderWebhookView(APIView):
             {
                 'success': True,
                 'message': 'Payload accepted.',
+                'status': status.HTTP_200_OK,
+                'data': {},
+            },
+            status=status.HTTP_200_OK,
+        )
+
+
+class PurchaseOrderProductView(APIView):
+    authentication_classes = [SessionAuthentication]
+
+    def delete(self, request, pk):
+        purchase_order_product = PurchaseOrderProduct.objects.filter(id=pk).first()
+
+        if not purchase_order_product:
+            return Response(
+                {
+                    'success': False,
+                    'message': 'Purchase order product not found.',
+                    'code': 'not_found',
+                    'data': {},
+                    'status': status.HTTP_404_NOT_FOUND,
+                },
+                status=status.HTTP_404_NOT_FOUND,
+            )
+
+        purchase_order_product.delete()
+
+        return Response(
+            {
+                'success': True,
+                'message': 'Purchase order product deleted.',
+                'code': 'success',
                 'status': status.HTTP_200_OK,
                 'data': {},
             },

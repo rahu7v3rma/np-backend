@@ -18,15 +18,18 @@ getProductsBySupplier = async ({
   name,
 }) => {
   return await _callAPI(
-    `inventory/supplier-products?name=${name}`,
+    `inventory/supplier-products?name=${encodeURIComponent(name)}`,
     'GET',
   );
 };
 
 sendApprovedPO = async (id) => {
-    return await _callAPI(`logistics/order-products-status/${id}`, 'PATCH', {}, {
+    const response = await _callAPI(`logistics/order-products-status/${id}`, 'PATCH', {}, {
         'X-CSRFToken': getCookie("csrftoken"),
     });
+    
+    // Return the response for better error handling in the calling function
+    return response;
 };
 
 sendProductsOrder = async (order, id) => {

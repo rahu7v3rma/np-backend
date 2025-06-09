@@ -1,0 +1,68 @@
+{% extends "admin/change_list.html" %}
+{% load i18n admin_urls static admin_list values_result_list %}
+
+{% block result_list %}
+<div class="results">
+	<div style="max-height: 750px; overflow-y: auto;">
+		<table id="result_list">
+			<thead>
+				<tr>
+					<th scope="col" class="column-product_supplier" style="position: sticky; top: 0px; z-index: 1000;">
+
+						<div class="text"><span>Supplier</span></div>
+						<div class="clear"></div>
+					</th>
+					<th scope="col" class="column-total_ordered" style="position: sticky; top: 0px; z-index: 1000;">
+
+						<div class="text"><span>Total Ordered</span></div>
+						<div class="clear"></div>
+					</th>
+					<th scope="col" class="column-voucher_type" style="position: sticky; top: 0px; z-index: 1000;">
+
+						<div class="text"><span>Voucher type</span></div>
+						<div class="clear"></div>
+					</th>
+					<th scope="col" class="column-sent_to_approve" style="position: sticky; top: 0px; z-index: 1000;">
+
+						<div class="text"><span>Sent to Approve</span></div>
+						<div class="clear"></div>
+					</th>
+					<th scope="col" class="column-in_transit_stock" style="position: sticky; top: 0px; z-index: 1000;">
+
+						<div class="text"><span>In Transit Stock</span></div>
+						<div class="clear"></div>
+					</th>
+					<th scope="col" class="sortable column-difference_to_order {% if request.GET.o == '5' %}sorted ascending{% elif request.GET.o == '-5' %}sorted descending{% endif %}"
+						style="position: sticky; top: 0px; z-index: 1000;">
+						{% if request.GET.o == '5' or request.GET.o == '-5' %}
+						<div class="sortoptions">
+							<a class="sortremove" href="?o=" title="Remove from sorting"></a>
+							{% if request.GET.o == '5' %}
+								<a href="?o=-5" class="toggle ascending" title="Toggle sorting"></a>
+							{% elif request.GET.o == '-5' %}
+								<a href="?o=5" class="toggle descending" title="Toggle sorting"></a>
+							{% endif %}
+						</div>	   
+						{% endif %}
+						<div class="text"><a href="{% if request.GET.o == '5' %}?o=-5{% else %}?o=5{% endif %}">Difference To Order</a></div>
+						<div class="clear"></div>
+					</th>
+				</tr>
+			</thead>
+			<tbody>
+				{% for group in grouped_data %}
+					<tr>
+						<td class="field-product_supplier"><a href="/admin/logistics/employeeorderproduct/?product_id__product_id__supplier__name__in={{ group.product_supplier }}&e=voucher&product_id__product_id__voucher_type={{ group.voucher_type }}&product_id__product_id__product_kind__in=MONEY&include_columns=voucher_type&exclude_columns=variations&columns_order=product_supplier,product_sku,product_name,voucher_value,voucher_type,total_ordered,product_cost_price,product_quantity,sent_to_approve,in_transit_stock,difference_to_order">{{ group.product_supplier }}</a></td>
+						<td class="field-total_ordered">{{ group.total_ordered }}</td>
+						<td class="field-voucher_type">{{ group.voucher_type}}</td>
+						<td class="field-sent_to_approve">{{ group.sent_to_approve }}</td>
+						<td class="field-in_transit_stock">{{ group.in_transit_stock }}</td>
+						<td class="field-difference_to_order">{{ group.difference_to_order }}</td>
+					</tr>	
+				{% endfor %}
+				</tr>
+			</tbody>
+		</table>
+	</div>
+</div>
+{% endblock %}

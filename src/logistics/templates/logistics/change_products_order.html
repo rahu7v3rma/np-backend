@@ -6,10 +6,17 @@
 <script src="https://cdn.jsdelivr.net/npm/axios/dist/axios.min.js"></script>
 <script src="{% static "js/po_view_populates.js" %}"></script>
 <script>
+  function decodeHTMLEntities(text) {
+    const textarea = document.createElement('textarea');
+    textarea.innerHTML = text;
+    return textarea.value;
+  }
+
   window.addEventListener('load', function (){
       let _products = [];
       let quantity_arrived;
       let status;
+      const variations = JSON.parse(decodeHTMLEntities('{{ variations }}' || '{}').replaceAll("'", '"'));
 
       {% for prod in product_instance.products.all %}
             // keeping calculation result to prevent executing multiple db
@@ -24,7 +31,6 @@
             } else {
               status = "COMPLETE";
             }
-
             _products.push({
                 "prod_id": "{{ prod.product_id.id }}",
                 "prod_image": "{{ prod.product_id.main_image_link }}",
@@ -36,25 +42,34 @@
                 "sku": "{{ prod.product_id.sku }}",
                 "barcode": "{{ prod.product_id.reference }}",
                 "cost_price": "{{ prod.product_id.cost_price }}",
-                "status": status
+                "status": status,
+                "voucher_value": "{{prod.voucher_value}}",
+                "supplier_discount_rate": "{{prod.product_id.supplier_discount_rate}}",
+                "product_kind": "{{prod.product_id.product_kind}}",
+                "variations": variations['{{ prod.id }}'] || '',
+
             })
       {% endfor %}
 
-      const TAX_PERCENT = {{ tax_percent }};;  // Django variable
+      const TAX_PERCENT = {{ tax_percent }};  // Django variable
 
       // Function to remove tax from price
       function excludeTaxes(value) {
         if (!value || isNaN(value)) return 0.0;  // Ensure value is valid
-        return Math.round(value * (1 - TAX_PERCENT / 100) * 100) / 100;
+        return (value / ((100.0 + TAX_PERCENT) / 100.0)).toFixed(2);
       }
 
       // Loop through _products array and apply tax exclusion
       _products = _products.map(prod => {
         prod.cost_price = excludeTaxes(parseFloat(prod.cost_price));
+        if (prod.product_kind === 'MONEY') {
+          prod.cost_price = `${Math.round(Number(prod.cost_price))}`
+        }
         return prod;
       });
+      const hasMoneyProducts = _products.some(product => product.product_kind === "MONEY");
 
-      updateViewOrder(_products, '{{ product_instance.supplier }}', '{{ product_instance.id }}');
+      updateViewOrder(_products, '{{ product_instance.supplier }}', '{{ product_instance.id }}', hasMoneyProducts);
       updateViewSubtotal(_products);
       let elements = document.getElementById("content").getElementsByTagName("h2");
       if (elements) elements[0].style.display = "none";
@@ -97,6 +112,9 @@
                     <th scope="col" class="text-center py-3 bg-white">Quantity Received</th>
                     <th scope="col" class="text-center py-3 bg-white">Cost</th>
                     <th scope="col" class="text-center py-3 bg-white">Status</th>
+                    <th scope="col" class="text-center py-3 bg-white">Product Kind</th>
+                    <th scope="col" class="text-center py-3 bg-white" id="voucherValueHeader" style="display: none;">Voucher Value</th>
+                    <th scope="col" class="text-center py-3 bg-white" id="supplierDiscountHeader" style="display: none;">Supplier Discount Rate</th>
                   </tr>
                 </thead>
                 <tbody class="text-[#868788] font-sans font-normal text-sm leading-[22px]" id="table-body">

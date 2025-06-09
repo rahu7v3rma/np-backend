@@ -2,7 +2,6 @@ from io import BytesIO
 
 from django.conf import settings
 from django.contrib import messages
-from django.db.models import Q
 from django.http import HttpResponse
 from django.utils.translation import ngettext
 from openpyxl import Workbook
@@ -12,7 +11,6 @@ from campaign.serializers import (
     ProductSerializerQuickOfferAdmin,
 )
 from inventory.models import Product
-from logistics.models import PurchaseOrder, PurchaseOrderProduct
 from logistics.tasks import send_order_to_logistics_center
 
 from .models import (
@@ -21,7 +19,6 @@ from .models import (
     Employee,
     EmployeeGroupCampaign,
     Order,
-    OrderProduct,
 )
 from .tasks import (
     export_orders_as_xlsx as export_orders_as_xlsx_task,
@@ -32,7 +29,9 @@ from .tasks import (
 class CampaignActionsMixin:
     def activate_campaign(self, request, queryset):
         # only pending campaigns should be activated
-        pending_campaigns = queryset.filter(status__in=['PENDING', 'FINISHED']).all()
+        pending_campaigns = queryset.filter(
+            status__in=['PENDING', 'PREVIEW', 'PENDING_APPROVAL', 'FINISHED']
+        ).all()
 
         for campaign in pending_campaigns:
             if request.POST.get('send_email') == '1':
@@ -78,8 +77,36 @@ class CampaignActionsMixin:
             messages.SUCCESS,
         )
 
+    def preview_campaign(self, request, queryset):
+        updated = queryset.update(status='PREVIEW')
+        self.message_user(
+            request,
+            ngettext(
+                '%d campaign was successfully marked as preview.',
+                '%d campaigns were successfully marked as preview.',
+                updated,
+            )
+            % updated,
+            messages.SUCCESS,
+        )
+
+    def pending_approval_campaign(self, request, queryset):
+        updated = queryset.update(status='PENDING_APPROVAL')
+        self.message_user(
+            request,
+            ngettext(
+                '%d campaign was successfully marked as pending approval.',
+                '%d campaigns were successfully marked as pending approval.',
+                updated,
+            )
+            % updated,
+            messages.SUCCESS,
+        )
+
     def finish_campaign(self, request, queryset):
-        updated = queryset.filter(status='ACTIVE').update(status='FINISHED')
+        updated = queryset.filter(status__in=['ACTIVE', 'PENDING_APPROVAL']).update(
+            status='FINISHED'
+        )
         self.message_user(
             request,
             ngettext(
@@ -158,10 +185,12 @@ class OrderActionsMixin:
             if (
                 order.campaign_employee_id.campaign.status
                 != Campaign.CampaignStatusEnum.FINISHED.name
+                and order.campaign_employee_id.campaign.campaign_type
+                != Campaign.CampaignTypeEnum.WALLET.name
             ):
                 errors.append(
                     f'order {order.reference} is part of a campaign that is '
-                    'not finished'
+                    'not finished and not of type "wallet"'
                 )
 
             if all(
@@ -217,15 +246,7 @@ class OrderActionsMixin:
         )
 
     def complete(self, request, queryset):
-        OrderProduct.objects.filter(order_id__in=queryset).filter(
-            Q(
-                product_id__product_id__in=PurchaseOrderProduct.objects.filter(
-                    purchase_order__status=PurchaseOrder.Status.SENT_TO_SUPPLIER.name,
-                ).values_list('product_id', flat=True)
-            )
-            | Q(product_id__product_id__product_kind=Product.ProductKindEnum.MONEY.name)
-        ).update(po_status=OrderProduct.POStatus.COMPLETE.name)
-
+        queryset.update(status=Order.OrderStatusEnum.COMPLETE.name)
         orders_count = queryset.count()
 
         self.message_user(

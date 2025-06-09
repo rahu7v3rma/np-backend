@@ -7,12 +7,13 @@ from django.conf import settings
 from django.contrib import admin
 from django.contrib.auth import get_user_model
 from django.core.exceptions import ValidationError
-from django.core.validators import MaxValueValidator, validate_email
+from django.core.validators import MaxValueValidator, MinValueValidator, validate_email
 from django.db import models
 from django.db.models import Sum
 from django.db.models.functions import Cast, Concat, Left
 from django.forms.models import model_to_dict
 from django.urls import reverse
+from django.utils import timezone
 import pyotp
 
 from lib.admin_utils import anchor_tag_popup
@@ -64,6 +65,7 @@ class OrganizationProduct(models.Model):
 class EmployeeAuthEnum(Enum):
     EMAIL = 'email'
     SMS = 'sms'
+    VOUCHER_CODE = 'voucher_code'
     AUTH_ID = 'auth_id'
 
 
@@ -179,6 +181,8 @@ class Employee(models.Model):
             suffix = 'p'
         elif self.login_type == EmployeeAuthEnum.EMAIL.name:
             suffix = 'e'
+        elif self.login_type == EmployeeAuthEnum.VOUCHER_CODE.name:
+            suffix = 'c'
 
         return f'{settings.EMPLOYEE_SITE_BASE_URL}/{campaign_code}/{suffix}'
 
@@ -233,7 +237,9 @@ class Campaign(models.Model):
     class CampaignStatusEnum(Enum):
         PENDING = 'Pending'
         OFFER = 'Offer'
+        PREVIEW = 'Preview'
         ACTIVE = 'Active'
+        PENDING_APPROVAL = 'Pending Approval'
         FINISHED = 'Finished'
 
     organization = models.ForeignKey(Organization, on_delete=models.CASCADE)
@@ -320,7 +326,11 @@ class Campaign(models.Model):
         return (
             Order.objects.filter(
                 campaign_employee_id__campaign=self,
-                status=Order.OrderStatusEnum.PENDING.name,
+                status__in=(
+                    Order.OrderStatusEnum.PENDING.name,
+                    Order.OrderStatusEnum.SENT_TO_LOGISTIC_CENTER.name,
+                    Order.OrderStatusEnum.COMPLETE.name,
+                ),
             )
             .values_list('campaign_employee_id__employee', flat=True)
             .distinct()
@@ -472,7 +482,10 @@ class EmployeeGroupCampaign(models.Model):
 
     campaign = models.ForeignKey(Campaign, on_delete=models.CASCADE)
     employee_group = models.ForeignKey(EmployeeGroup, on_delete=models.CASCADE)
-    budget_per_employee = models.IntegerField()
+    budget_per_employee = models.IntegerField(verbose_name='Employee Credit')
+    company_cost_per_employee = models.IntegerField(
+        verbose_name='Company Cost Per Employee', default=0
+    )
     product_selection_mode = models.CharField(
         max_length=32,
         default=ProductSelectionTypeEnum.SINGLE.name,
@@ -511,6 +524,8 @@ class EmployeeGroupCampaign(models.Model):
             suffix = 'p'
         elif self.employee_group.auth_method == EmployeeAuthEnum.AUTH_ID.name:
             suffix = 'a'
+        elif self.employee_group.auth_method == EmployeeAuthEnum.VOUCHER_CODE.name:
+            suffix = 'c'
 
         return f'{settings.EMPLOYEE_SITE_BASE_URL}/{self.campaign.code}/{suffix}'
 
@@ -550,10 +565,13 @@ class EmployeeGroupCampaignProduct(models.Model):
         validators=[MaxValueValidator(100.0)],
         help_text='Enter a Organization Discount Rate up to 100.0.',
     )
+    company_cost_per_employee = models.IntegerField(
+        verbose_name='Company Cost Per Employee', blank=True, null=True
+    )
     active = models.BooleanField(default=True)
 
     def __str__(self):
-        return self.product_id.name
+        return self.product_id.name_he
 
 
 class Cart(models.Model):
@@ -599,6 +617,7 @@ class Order(models.Model):
         PENDING = 'Pending'
         CANCELLED = 'Cancelled'
         SENT_TO_LOGISTIC_CENTER = 'Sent To Logistic Center'
+        COMPLETE = 'Complete'
 
     reference = models.AutoField(primary_key=True)
     campaign_employee_id = models.ForeignKey(CampaignEmployee, on_delete=models.CASCADE)
@@ -638,6 +657,8 @@ class Order(models.Model):
     logistics_center_shipping_number = models.CharField(
         max_length=64, null=True, blank=True
     )
+    dc_status_last_changed = models.DateTimeField(null=True, blank=True)
+
     country = models.CharField(max_length=100, null=True, blank=True)
     state_code = models.CharField(max_length=100, null=True, blank=True)
     zip_code = models.CharField(max_length=100, null=True, blank=True)
@@ -646,9 +667,19 @@ class Order(models.Model):
     # override the model manager so we can use `order_id` field for filters
     # and calculate the value in one central place
     objects = OrderManager()
+    raw_details = models.TextField(null=True, blank=True)
 
     def __str__(self):
         return f'Order #{self.reference}'
+
+    def save(self, *args, **kwargs):
+        if self.pk:
+            previous = Order.objects.get(pk=self.pk)
+            if previous.logistics_center_status != self.logistics_center_status:
+                self.dc_status_last_changed = timezone.now()
+        else:
+            self.dc_status_last_changed = timezone.now()
+        super().save(*args, **kwargs)
 
     @admin.display(description='Organization')
     def organization(self):
@@ -706,23 +737,38 @@ class Order(models.Model):
 
 
 class OrderProduct(models.Model):
-    class POStatus(Enum):
-        WAITING = 'Waiting'
-        PO_SENT = 'PO Sent'
-        IN_TRANSIT = 'In Transit'
-        COMPLETE = 'Complete'
-
+    purchase_order_product = models.ForeignKey(
+        'logistics.PurchaseOrderProduct',
+        on_delete=models.SET_NULL,
+        related_name='order_products',
+        null=True,
+        blank=True,
+    )
     order_id = models.ForeignKey(Order, on_delete=models.CASCADE)
     product_id = models.ForeignKey(
         EmployeeGroupCampaignProduct, on_delete=models.CASCADE
     )
     quantity = models.IntegerField()
     variations = models.JSONField(null=True, blank=True)
-    po_status = models.CharField(
-        max_length=20,
-        choices=[(p.name, p.value) for p in POStatus],
-        default=POStatus.WAITING.name,
+    voucher_val = models.FloatField(
+        blank=True,
+        null=True,
+        validators=[MinValueValidator(0.0)],
     )
+
+    @property
+    def po_status(self):
+        status_dict = {
+            'PENDING': 'WAITING',
+            'SENT_TO_SUPPLIER': 'PO_SENT',
+            'APPROVED': 'IN_TRANSIT',
+        }
+
+        if self.purchase_order_product:
+            return status_dict.get(
+                self.purchase_order_product.purchase_order.status, ''
+            )
+        return ''
 
     @property
     def product(self):

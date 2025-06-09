@@ -11,6 +11,7 @@ def fill_message_template(welcome_text, employee: Employee, campaign: Campaign) 
             'organization_name': campaign.organization.name_he,
             'campaign_name': campaign.name_he,
             'link': employee.get_campaign_site_link(campaign.code),
+            'auth_id': employee.auth_id,
         }
     else:
         context = {
@@ -19,6 +20,7 @@ def fill_message_template(welcome_text, employee: Employee, campaign: Campaign) 
             'organization_name': campaign.organization.name_en,
             'campaign_name': campaign.name_en,
             'link': employee.get_campaign_site_link(campaign.code),
+            'auth_id': employee.auth_id,
         }
     message_text = Template(welcome_text).render(Context(context))
     return message_text
